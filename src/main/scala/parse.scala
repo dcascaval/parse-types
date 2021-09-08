@@ -77,7 +77,7 @@ object Parser {
 
   def nonUnionType[_: P]: P[DataType] = withArray(
     P(
-      arrowType | baseType | parameterizedType |
+      arrowType | parameterizedType | baseType |
         tupleType | stringType
     )
   )
@@ -101,10 +101,19 @@ object Parser {
 object TestParse extends App {
   import Parser._
 
+  var print = false
+  def withPrint(f: => Any) = {
+    print = true
+    f
+    print = false
+  }
+
   def parseWhole[T](str: String, p: P[_] => P[T]): Option[T] = {
     // println(str)
     val res = fastparse.parse(str, p)
-    // println(s"$str => $res")
+    if (print) {
+      println(s"$str => $res")
+    }
     res match {
       case Success(value, index) =>
         assert(index == str.length())
@@ -150,6 +159,17 @@ object TestParse extends App {
   parseWhole("(kk: k[], jolly_roger?: q) => fff", arrowType(_))
   parseWhole("(kk: No[], jolly_roger?: Yes) => fff", dataType(_))
   parseWhole("() => void", dataType(_))
+
+  info("paramTypes")
+  parseWhole("Curve<K>", dataType(_))
+  parseWhole("Curve<K,Z[]>", dataType(_))
+  parseWhole("A<B<C>>", dataType(_))
+  parseWhole("K<L<M>,N|Z,()=>O>", dataType(_))
+
+  info("constArrays")
+  parseWhole("[number, number]", dataType(_))
+  parseWhole("[number, K<F>[][]]", dataType(_))
+  parseWhole("[[number], o[][]]", dataType(_))
 
   info("integration")
   val tts = Seq(
