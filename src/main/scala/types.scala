@@ -8,20 +8,45 @@ case class Base(name: String) extends DataType // number, undefined, void, etc.
 case class StringType(value: String) extends DataType // 'foo'
 case class Parameterized(name: String, parameters: Seq[DataType]) extends DataType // ArrayLike<number>
 case class ArrayType(member: DataType) extends DataType // number[]
-case class ArrowType(parameters: Seq[Argument], ret: DataType) extends DataType
+case class ArrowType(typeParameters: Option[Seq[TypeParameterDecl]], parameters: ArgList, ret: DataType)
+    extends DataType
 case class TupleType(members: Seq[DataType]) extends DataType // [number, number, number]
 // TODO: remove undefined from this set if it's optional on an arg/parameter
-case class UnionType(members: Set[DataType]) extends DataType // number | undefined
-case class ObjectType(members: Seq[Argument], keys: Seq[Key]) extends DataType
+case class UnionType(members: Seq[DataType]) extends DataType // number | undefined
+case class ObjectType(members: Seq[Argument], keys: Seq[Key]) extends DataType // { a: T; b: Q }
 
 case class Argument(name: String, dataType: DataType, optional: Boolean)
 case class Key(name: String, dataType: DataType, returnType: DataType)
+
+object Argument {
+  def fromRaw(name: String, data: DataType, optional: Boolean): Argument = {
+    // When we have an optional argument that includes undefined in the type
+    // member, we can safely remove undefined from the union type.
+    if (optional) {
+      data match {
+        case UnionType(members) => {
+          val withoutUndefined = members.filter(_ != Base("undefined"))
+          withoutUndefined match {
+            case Seq(single) => return Argument(name, single, optional)
+            case rest        => return Argument(name, UnionType(withoutUndefined), optional)
+          }
+        }
+        case _ => ()
+      }
+    }
+    Argument(name, data, optional)
+  }
+}
+
+// foo(a: bar, b: number, ...args: any[])
+case class ArgList(args: Seq[Argument], varArg: Option[DataType])
 
 sealed trait GetSetState
 case object Getter extends GetSetState
 case object Setter extends GetSetState
 
 sealed trait Member
+sealed trait InterfaceMember extends Member
 
 // [readonly] foo: A;
 case class ValueMember(
@@ -29,7 +54,7 @@ case class ValueMember(
     dataType: DataType,
     optional: Boolean,
     readOnly: Boolean
-) extends Member
+) extends InterfaceMember
 
 // static foo: A;
 case class StaticMember(name: String, datatype: DataType, readOnly: Boolean)
@@ -38,13 +63,14 @@ case class StaticMember(name: String, datatype: DataType, readOnly: Boolean)
 // setFoo(foo: A, bar?: B);
 case class FnMember(
     name: String,
-    parameters: Seq[Argument],
-    returnType: DataType,
+    typeParameters: Option[Seq[TypeParameterDecl]],
+    parameters: ArgList,
+    returnType: Option[DataType],
     getSet: Option[GetSetState]
-) extends Member
+) extends InterfaceMember
 
 case class Constructor(
-    parameters: Seq[Argument]
+    parameters: ArgList
 ) extends Member
 
 // In scala there isn't such a thing as a default type parameter, so we
@@ -77,7 +103,7 @@ case class TopLevelEnum(
 //   foo: A;                           // member
 //   setFoo(foo: A): ReturnType;       // function
 // }
-class BasicClass(
+class Class(
     name: String,
     typeParameters: Option[Seq[TypeParameterDecl]],
     values: Seq[ValueMember],
@@ -100,6 +126,6 @@ case class TopLevelType(name: String, dataType: DataType) extends TopLevelStatem
 case class Interface(
     name: String,
     parameters: Option[Seq[TypeParameterDecl]],
-    members: Seq[ValueMember],
+    members: Seq[InterfaceMember],
     extensions: Option[Seq[DataType]]
 ) extends TopLevelStatement
