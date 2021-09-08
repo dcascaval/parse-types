@@ -47,7 +47,7 @@ object Parser {
   // Consume array suffixes after any successful type parse so we don't infinitely recurse
   def withArray[_: P](baseParser: => P[DataType]): P[DataType] =
     P(baseParser ~ "[]".!.rep(0)).map { case (baseType, seq) =>
-      seq.foldLeft[DataType](baseType)((t, _) => ArrayOf(t))
+      seq.foldLeft[DataType](baseType)((t, _) => ArrayType(t))
     }
 
   // number, undefined, etc.
@@ -63,17 +63,17 @@ object Parser {
   def unionType[_: P]: P[DataType] = withArray(
     P(
       nonUnionType.rep(2, sep = "|"./)
-    ).map(mems => Union(Set.from(mems)))
+    ).map(mems => UnionType(Set.from(mems)))
   )
 
   // arrow (err: Error, data: Uint8Array, final: boolean) => void;
   def arrowType[_: P]: P[DataType] = P(
     argumentList ~/ "=>" ~ dataType
-  ).map { case (ps, ret) => Arrow(ps, ret) }
+  ).map { case (ps, ret) => ArrowType(ps, ret) }
   // [ A , B ]
   def tupleType[_: P]: P[DataType] = P(
     "[" ~/ dataType.rep(1, sep = ",") ~ "]"
-  ).map(ConstArray(_))
+  ).map(TupleType(_))
 
   def nonUnionType[_: P]: P[DataType] = withArray(
     P(

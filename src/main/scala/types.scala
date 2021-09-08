@@ -7,10 +7,10 @@ sealed trait DataType
 case class Base(name: String) extends DataType // number, undefined, void, etc.
 case class StringType(value: String) extends DataType // 'foo'
 case class Parameterized(name: String, parameters: Seq[DataType]) extends DataType // ArrayLike<number>
-case class Union(members: Set[DataType]) extends DataType // number | undefined
-case class ArrayOf(member: DataType) extends DataType // number[]
-case class Arrow(parameters: Seq[Argument], ret: DataType) extends DataType
-case class ConstArray(members: Seq[DataType]) extends DataType // [number, number, number]
+case class UnionType(members: Set[DataType]) extends DataType // number | undefined
+case class ArrayType(member: DataType) extends DataType // number[]
+case class ArrowType(parameters: Seq[Argument], ret: DataType) extends DataType
+case class TupleType(members: Seq[DataType]) extends DataType // [number, number, number]
 
 case class Argument(name: String, dataType: DataType, optional: Boolean)
 // [readonly] foo: A;
