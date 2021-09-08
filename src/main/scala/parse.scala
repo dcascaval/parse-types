@@ -7,6 +7,8 @@ import JavaWhitespace._ // Ignore whitespace and //, /* */ comment blocks
 import fastparse.Parsed.Success
 import fastparse.Parsed.Failure
 
+// MISSING LANGUAGE FEATURES:
+// - ?
 object Parser {
 
   // SYNTAX
@@ -40,6 +42,8 @@ object Parser {
   //
   // TYPES
   //
+  //
+
   // Consume array suffixes after any successful type parse so we don't infinitely recurse
   def withArray[_: P](baseParser: => P[DataType]): P[DataType] =
     P(baseParser ~ "[]".!.rep(0)).map { case (baseType: DataType, seq: Seq[String]) =>
@@ -48,8 +52,10 @@ object Parser {
 
   // number, undefined, etc.
   def baseType[_: P]: P[DataType] = P(ident).map(Base(_))
+
   // 'foo'
   def stringType[_: P]: P[DataType] = P("'" ~/ ident ~ "'").map(StringType(_))
+
   // Curve<A, B>
   def parameterizedType[_: P]: P[DataType] = P(
     ident ~ "<" ~/ dataType.rep(1, sep = ",") ~ ">"
@@ -66,6 +72,7 @@ object Parser {
   def arrowType[_: P]: P[DataType] = P(
     typeArgumentList.? ~ argumentList ~/ "=>" ~ dataType
   ).map { case (typPars, args, ret) => ArrowType(typPars, args, ret) }
+
   // [ A , B ]
   def tupleType[_: P]: P[DataType] = P(
     "[" ~/ dataType.rep(1, sep = ",") ~ "]"
@@ -102,6 +109,9 @@ object Parser {
     NoCut(unionType) | nonUnionType | withArray("(" ~ dataType ~ ")")
   )
 
+  //
+  //  Type Arguments
+  //
   // <Foo extends A = B>
   def typeArgument[_: P]: P[TypeParameterDecl] = P(
     ident ~ singleExtensionClause.? ~ singleDefaultClause.?
@@ -116,61 +126,70 @@ object Parser {
   def extensionClause[_: P]: P[Seq[DataType]] = P("extends" ~/ dataType.rep(1, sep = ","))
   def implementsClause[_: P]: P[DataType] = P("implements" ~/ dataType)
 
-  // MEMBERS
+  //
+  // CLASS/OBJECT MEMBERS
+  //
   def getSet[_: P] = P(("get" | "set").!).map(str => if (str == "get") Getter else Setter)
-  def valueMember[_: P] = P("readonly".!.? ~ identColonQ ~ dataType ~ ";").map {
-    case (readOnly, (name, optional), typ) => ValueMember(name, typ, optional, readOnly.isDefined)
-  }
-  def staticMember[_: P] = ("static" ~/ "readonly".!.? ~ ident ~ ":" ~ dataType ~ ";").map {
-    case (readOnly, name, typ) => StaticMember(name, typ, readOnly.isDefined) // never optional
+
+  def privateMember[_: P] = P("private" ~/ CharsWhile(_ != ';') ~ ";")
+
+  def valueMember[_: P] = P("static".!.? ~ "readonly".!.? ~ identColonQ ~ dataType ~ ";").map {
+    case (static, readOnly, (name, optional), typ) =>
+      ValueMember(name, typ, optional, readOnly.isDefined, static.isDefined)
   }
 
   // NB: ignoring optional function members for now as we have no real way to model them in scala.
   def functionMember[_: P] =
-    P(getSet.? ~ ident ~ typeArgumentList.? ~ "?".? ~ argumentList ~/ (":" ~ dataType).? ~ ";").map {
-      case (gs, name, typArgs, args, ret) => FnMember(name, typArgs, args, ret, gs)
+    P(
+      getSet.? ~ "static".!.? ~ ident ~ typeArgumentList.? ~ "?".? ~ argumentList ~/ (":" ~ dataType).? ~ ";"
+    ).map { case (gs, static, name, typArgs, args, ret) =>
+      FnMember(name, typArgs, args, ret, gs, static.isDefined)
     }
 
   def constructor[_: P] = P("constructor" ~/ argumentList ~ ";").map(Constructor(_))
-  def classMember[_: P]: P[Member] = P(constructor | functionMember | staticMember | valueMember)
+  def classMember[_: P]: P[Any] = P(constructor | functionMember | valueMember | privateMember)
   def interfaceMember[_: P]: P[InterfaceMember] = P(valueMember | functionMember)
 
   // STATEMENTS
   def importStmt[_: P] = P("import" ~ CharsWhile(_ != ';') ~ ";")
 
-  def topConstant[_: P] = P("export" ~ "const" ~/ ident ~ ":" ~ dataType ~ ";").map { case (name, typ) =>
-    TopLevelConstant(name, typ)
+  def indirectExport[_: P] = P("export" ~ "*" ~ "from" ~/ CharsWhile(_ != ';') ~ ";")
+  def directExport[_: P] = P("export" ~ "{" ~/ CharsWhile(_ != ';') ~ ";")
+  def exportStmt[_: P] = P(directExport | indirectExport)
+
+  def nestedConstant[_: P] = P(("const" | "let") ~/ ident ~ ":" ~ dataType ~ ";").map {
+    case (name, typ) =>
+      Constant(name, typ)
   }
 
-  def topInterface[_: P] = P(
-    "export" ~ "interface" ~/ ident ~ typeArgumentList.? ~ extensionClause.? ~ "{" ~
+  def nestedFunction[_: P] = P("function" ~/ functionMember).map(Function(_))
+
+  def nestedInterface[_: P] = P(
+    "interface" ~/ ident ~ typeArgumentList.? ~ extensionClause.? ~ "{" ~
       interfaceMember.rep(0) ~ "}"
   ).map { case (name, args, exts, members) =>
     new Interface(name, args, members, exts)
   }
 
-  def topClass[_: P] = P(
-    "export" ~ "class" ~/ ident ~ typeArgumentList.? ~ extensionClause.? ~ implementsClause.? ~ "{" ~
+  def nestedClass[_: P] = P(
+    "class" ~/ ident ~ typeArgumentList.? ~ extensionClause.? ~ implementsClause.? ~ "{" ~
       classMember.rep(0) ~ "}"
   ).map { case (name, typeArgs, extensions, implements, members) =>
     val values = ArrayBuffer[ValueMember]()
-    val statics = ArrayBuffer[StaticMember]()
     val functions = ArrayBuffer[FnMember]()
     val ctrs = ArrayBuffer[Constructor]()
     for (mem <- members) {
       mem match {
-        case v: ValueMember  => values += v
-        case s: StaticMember => statics += s
-        case f: FnMember     => functions += f
-        case c: Constructor  => ctrs += c
+        case v: ValueMember => values += v
+        case f: FnMember    => functions += f
+        case c: Constructor => ctrs += c
+        case _              => ()
       }
     }
-
     new Class(
       name,
       typeArgs,
       values.toSeq,
-      statics.toSeq,
       functions.toSeq,
       ctrs.toSeq,
       extensions,
@@ -178,34 +197,55 @@ object Parser {
     )
   }
 
-  def topType[_: P] = P(
-    "export" ~ "type" ~/ ident ~ "=" ~ dataType ~ ";"
+  def nestedType[_: P] = P(
+    "type" ~/ ident ~ "=" ~ dataType ~ ";"
   ).map { case (name, typ) => TopLevelType(name, typ) }
 
   def digits[_: P] = P(CharsWhile(_.isDigit).!).map(_.toInt)
-
   def enumString[_: P] = P("'" ~/ ident ~ "'").map(StringMem(_))
   def enumValue[_: P] = P(ident ~ "=" ~/ digits).map { case (name, value) => ValueMem(name, value) }
   def enumBasic[_: P] = P(ident).map(BasicMember(_))
-
   def enumMember[_: P] = P(enumValue | enumString | enumBasic)
-
-  def topEnum[_: P] = P(
-    "export" ~ "enum" ~/ ident ~ "{" ~ enumMember.rep(0) ~ "}"
+  def nestedEnum[_: P] = P(
+    "enum" ~/ ident ~ "{" ~ enumMember.rep(0) ~ "}"
   ).map { case (name, mems) =>
     TopLevelEnum(name, mems)
   }
+
+  // TODO: parse this export to correctly expose contextual exported types
+  def namespaceMember[_: P]: P[Option[TopLevelStatement]] = P(
+    nestedFunction | nestedClass | nestedInterface | nestedConstant | exportStmt
+  ).map(mem =>
+    mem match {
+      case u: Unit              => None
+      case s: TopLevelStatement => Some(s)
+    }
+  )
+
+  def namespace[_: P] = P("namespace" ~/ ident ~ "{" ~ namespaceMember.rep(0) ~ "}").map {
+    case (name, mems) =>
+      Namespace(name, mems.flatMap(identity))
+  }
+
+  def topConstant[_: P] = P("export" ~ nestedConstant)
+  def topFunction[_: P] = P("export" ~ nestedFunction)
+  def topClass[_: P] = P("export" ~ nestedClass)
+  def topInterface[_: P] = P("export" ~ nestedInterface)
+  def topNamespace[_: P] = P("export" ~ namespace)
+  def topType[_: P] = P("export" ~ nestedType)
+  def topEnum[_: P] = P("export" ~ nestedEnum)
+
   //
   //
   //
   def withEnd[_: P, T](p: => P[T]) = P(p ~ End)
 
   def topLevelStmt[_: P]: P[TopLevelStatement] = (
-    topEnum | topInterface | topClass | topConstant | topType
+    topEnum | topInterface | topClass | topConstant | topType | topFunction | topNamespace
   )
 
   def allTop[_: P]: P[Seq[TopLevelStatement]] = (
-    (importStmt | topLevelStmt)
+    (importStmt | exportStmt | topLevelStmt)
       .rep(0)
     )
     .map(stmts =>

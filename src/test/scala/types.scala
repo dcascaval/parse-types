@@ -40,9 +40,12 @@ class BaseTests extends AnyFunSuite {
   import Parser._
   import TestHelpers._
 
-  test("import") {
+  test("import/export") {
     val exImport = "import { BufferAttribute } from './../core/BufferAttribute';"
     parseWhole(exImport, importStmt(_))
+
+    parseWhole("export * from '../core/Three';", exportStmt(_))
+    parseWhole("export { f as Y, foo as Bar };", exportStmt(_))
   }
 
   test("idents") {

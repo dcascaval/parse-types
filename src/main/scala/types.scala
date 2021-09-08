@@ -53,12 +53,9 @@ case class ValueMember(
     name: String,
     dataType: DataType,
     optional: Boolean,
-    readOnly: Boolean
+    readOnly: Boolean,
+    static: Boolean
 ) extends InterfaceMember
-
-// static foo: A;
-case class StaticMember(name: String, datatype: DataType, readOnly: Boolean)
-    extends Member // Goes in companion object
 
 // setFoo(foo: A, bar?: B);
 case class FnMember(
@@ -66,7 +63,8 @@ case class FnMember(
     typeParameters: Option[Seq[TypeParameterDecl]],
     parameters: ArgList,
     returnType: Option[DataType],
-    getSet: Option[GetSetState]
+    getSet: Option[GetSetState],
+    static: Boolean // Mutually exclusive with get/set
 ) extends InterfaceMember
 
 case class Constructor(
@@ -80,7 +78,7 @@ case class TypeParameterDecl(name: String, extension: Option[DataType], default:
 sealed trait TopLevelStatement
 
 // export const foo: A;
-case class TopLevelConstant(
+case class Constant(
     name: String,
     dataType: DataType
 ) extends TopLevelStatement
@@ -107,7 +105,6 @@ class Class(
     name: String,
     typeParameters: Option[Seq[TypeParameterDecl]],
     values: Seq[ValueMember],
-    statics: Seq[StaticMember],
     functions: Seq[FnMember],
     constructors: Seq[Constructor],
     extensions: Option[Seq[DataType]],
@@ -128,4 +125,13 @@ case class Interface(
     parameters: Option[Seq[TypeParameterDecl]],
     members: Seq[InterfaceMember],
     extensions: Option[Seq[DataType]]
+) extends TopLevelStatement
+
+case class Namespace(
+    name: String,
+    members: Seq[TopLevelStatement]
+) extends TopLevelStatement
+
+case class Function(
+    value: FnMember
 ) extends TopLevelStatement
