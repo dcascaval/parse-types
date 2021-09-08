@@ -1,0 +1,12 @@
+.bsp/
+.bloop/
+.metals/
+out/
+node_modules/
+.DS_Store
+yarn.lock
+target/
+project/project/
+*.log
+project/metals.sbt
+.vscode/
