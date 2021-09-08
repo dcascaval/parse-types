@@ -2,7 +2,6 @@ package tsparse
 
 import fastparse._
 import JavaWhitespace._ // Ignore whitespace and //, /* */ comment blocks
-import javax.xml.crypto.Data
 import fastparse.Parsed.Success
 import fastparse.Parsed.Failure
 
@@ -28,20 +27,19 @@ object Parser {
   def identColonQ[_: P]: P[(String, Boolean)] = P(
     ident ~ "?".?.! ~ ":"
   ).map { case (name, q) =>
-    println(s"ColonIdentQ: '$q'")
     (name, q.length() > 0)
   }
 
   // IDENTIFIERS
   def alphaUnder[_: P] = P(CharPred(c => c.isLetter || c == '_'))
   def alphaUnderDigit[_: P] = P(CharsWhile(c => c.isLetterOrDigit || c == '_'))
-  def ident[_: P] = P((alphaUnder ~ alphaUnderDigit).!)
+  def ident[_: P] = P((alphaUnder ~ alphaUnderDigit.?).!)
 
   // PARAMETERS
   def parameter[_: P]: P[Argument] = P(identColonQ ~ dataType).map { case (name, rdo, data) =>
     Argument(name, data, rdo)
   }
-  def argumentList[_: P]: P[Seq[Argument]] = P("(" ~ parameter.rep(0, sep = ",") ~ ")")
+  def argumentList[_: P]: P[Seq[Argument]] = P("(" ~ parameter.rep(0, sep = ",") ~ ",".? ~ ")")
 
   // TYPES
   //
@@ -86,7 +84,7 @@ object Parser {
 
   // Any datatype
   def dataType[_: P]: P[DataType] = P(
-    unionType | nonUnionType | ("(" ~ dataType ~ ")")
+    NoCut(unionType) | nonUnionType | withArray("(" ~ dataType ~ ")")
   )
 
   def withEnd[_: P, T](p: => P[T]) = P(p ~ End)
@@ -106,10 +104,10 @@ object TestParse extends App {
   def parseWhole[T](str: String, p: P[_] => P[T]): Option[T] = {
     // println(str)
     val res = fastparse.parse(str, p)
-    println(s"$str => $res")
+    // println(s"$str => $res")
     res match {
       case Success(value, index) =>
-        // assert(index == str.length())
+        assert(index == str.length())
         Some(value)
       case f: Failure =>
         println(f.trace().longMsg)
@@ -142,10 +140,15 @@ object TestParse extends App {
   parseWhole("number | undefined", dataType(_))
   parseWhole("number | undefined | string | what", dataType(_))
 
+  info("parameters")
+  parseWhole("k: number", parameter(_))
+
   info("arrows")
   parseWhole("() => void", arrowType(_))
   parseWhole("(k: number) => void", arrowType(_))
-  parseWhole("(i: k, j: q) => fff", arrowType(_))
+  parseWhole("(i: k, j?: q) => fff", arrowType(_))
+  parseWhole("(kk: k[], jolly_roger?: q) => fff", arrowType(_))
+  parseWhole("(kk: No[], jolly_roger?: Yes) => fff", dataType(_))
   parseWhole("() => void", dataType(_))
 
   info("integration")
@@ -154,9 +157,9 @@ object TestParse extends App {
     "(number | undefined)[]",
     "number[] | undefined",
     "'foo' | 'bar'",
-    """(segment: LightningSegment,
-              parentSubray: LightningSubray,
-              childSubray?: LightningSubray,
+    """(segment: LightningSegment[],
+              parentSubray: () => Lightning[],
+              childSubray?: (ff: K) => 'string' | void,
               lightningStrike: LightningStrike,
           ) => void"""
   )
@@ -164,7 +167,7 @@ object TestParse extends App {
   def dtEnd[_: P] = withEnd(dataType)
 
   for (tt <- tts) {
-    parseWhole(tt, dataType(_))
+    parseWhole(tt, dtEnd(_))
   }
 
   println("Success")
