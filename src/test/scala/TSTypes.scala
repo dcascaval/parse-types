@@ -44,7 +44,6 @@ class SingleTest extends AnyFunSuite {
   import TestHelpers._
 
   test("single") {
-
     withPrint {
       parseWhole(
         """vertices: {

@@ -25,6 +25,10 @@ case class Preprocessor(file: String, oldText: String, newText: String) {
 //  - tuple types
 //  - default parsing hack (`export default` to be followed by toplevel stmt.)
 
+// To elevate this to the quality where it's worth distributing, we should additionally:
+// - Address export handling correctly instead of assuming everything to be visible
+// - Parse doc comments so that they end up alongside their corresponding members.
+
 object Main extends App {
 
   type FileResult = Seq[TopLevelStatement]
