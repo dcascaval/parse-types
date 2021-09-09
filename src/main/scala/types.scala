@@ -13,6 +13,7 @@ case class ArrowType(typeParameters: Option[Seq[TypeParameterDecl]], parameters:
 case class TupleType(members: Seq[DataType]) extends DataType // [number, number, number]
 // TODO: remove undefined from this set if it's optional on an arg/parameter
 case class UnionType(members: Seq[DataType]) extends DataType // number | undefined
+case class IntersectionType(members: Seq[DataType]) extends DataType
 case class ObjectType(members: Seq[Argument], keys: Seq[Key]) extends DataType // { a: T; b: Q }
 
 case class Argument(name: String, dataType: DataType, optional: Boolean)
@@ -56,6 +57,8 @@ case class ValueMember(
     readOnly: Boolean,
     static: Boolean
 ) extends InterfaceMember
+
+case class KeyMember(key: Key) extends InterfaceMember
 
 // setFoo(foo: A, bar?: B);
 case class FnMember(

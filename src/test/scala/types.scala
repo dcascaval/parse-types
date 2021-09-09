@@ -24,6 +24,9 @@ object TestHelpers {
     }
     res match {
       case Success(value, index) =>
+        if (index != str.length()) {
+          println(s"parsed to $index / ${str.length()}")
+        }
         assert(index == str.length())
         Some(value)
       case f: Failure =>
@@ -34,6 +37,24 @@ object TestHelpers {
 
   def info(str: String) =
     println(s"\n> ${str.toUpperCase()} ${"-" * (100 - str.length())} \n")
+}
+
+class SingleTest extends AnyFunSuite {
+  import Parser._
+  import TestHelpers._
+
+  test("single") {
+
+    withPrint {
+      parseWhole(
+        """vertices: {
+          near: any[];
+          far: any[];
+      };""",
+        valueMember(_)
+      )
+    }
+  }
 }
 
 class BaseTests extends AnyFunSuite {
@@ -73,6 +94,13 @@ class BaseTests extends AnyFunSuite {
     parseWhole("number | undefined | string | what", unionType(_))
     parseWhole("number | undefined", dataType(_))
     parseWhole("number | undefined | string | what", dataType(_))
+    parseWhole("'inline' | 'immersive-vr' | 'immersive-ar'", dataType(_))
+  }
+
+  test("intersections") {
+    parseWhole("string & {}", dataType(_))
+    parseWhole("(string & {})", dataType(_))
+    parseWhole("A | (string & {})", dataType(_))
   }
 
   test("parameters") {

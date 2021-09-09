@@ -16,15 +16,26 @@ object Parser {
   def comma[_: P] = P(",")
   def braced[_: P, T](p: => P[T]) = P("{" ~ p ~ "}")
   def withParens[_: P, T](p: => P[T]) = P("(" ~ p ~ ")")
+  def withEnd[_: P, T](p: => P[T]) = P(p ~ End)
 
-  def identColonQ[_: P]: P[(String, Boolean)] = P(
-    ident ~ "?".?.! ~ ":"
-  ).map { case (name: String, q: String) => (name, q.length() > 0) }
+  def identColonQ[_: P]: P[(String, Boolean)] = P(ident ~ colonQ)
+
+  def colonQ[_: P]: P[Boolean] = P("?".!.? ~ ":").map(str => str.isDefined)
+  def maybeEq[_: P]: P[Boolean] = P("=").map(str => false) // Not optional
+
+  // hack: sometimes ts defns use "= true" instead of ": true"
+  def identColonQorEq[_: P]: P[(String, Boolean)] = P(ident ~ (colonQ | maybeEq))
 
   // IDENTIFIERS
   def alphaUnder[_: P] = P(CharPred(c => c.isLetter || c == '_'))
   def alphaUnderDigit[_: P] = P(CharPred(c => c.isLetterOrDigit || c == '_'))
-  def ident[_: P] = P((alphaUnder ~ alphaUnderDigit.rep(0)).!)
+  def ident[_: P] = P(CharsWhile(c => c.isLetterOrDigit || c == '_').!)
+
+  def alphaUnderDigitDot[_: P] = P(CharPred(c => c.isLetterOrDigit || c == '_' || c == '.'))
+  def numDotIdent[_: P] = P(alphaUnderDigitDot.rep(1).!)
+
+  def strChars[_: P] = P(CharsWhile(c => c != '\''))
+  def string[_: P] = P("'" ~/ strChars.! ~ "'").map(s => s"'$s'")
 
   // PARAMETERS
   def parameter[_: P]: P[Argument] =
@@ -51,21 +62,29 @@ object Parser {
     }
 
   // number, undefined, etc.
-  def baseType[_: P]: P[DataType] = P(ident).map(Base(_))
+  // TODO: do we need to split this on dots into accesses?
+  def baseType[_: P]: P[DataType] = P(numDotIdent).map(Base(_))
 
   // 'foo'
-  def stringType[_: P]: P[DataType] = P("'" ~/ ident ~ "'").map(StringType(_))
+  def stringType[_: P]: P[DataType] = P(string).map(StringType(_))
 
   // Curve<A, B>
   def parameterizedType[_: P]: P[DataType] = P(
-    ident ~ "<" ~/ dataType.rep(1, sep = ",") ~ ">"
+    numDotIdent ~ "<" ~/ dataType.rep(1, sep = ",") ~ ">"
   ).map { case (name: String, ps: Seq[DataType]) => Parameterized(name, ps) }
 
   // A | B | C
   def unionType[_: P]: P[DataType] = withArray(
     P(
-      "|".? ~ nonUnionType.rep(2, sep = "|"./)
+      "|".? ~ nonRepeatingType.rep(2, sep = "|"./)
     ).map(mems => UnionType(mems))
+  )
+
+  // A & B & C
+  def intersectionType[_: P]: P[DataType] = withArray(
+    P(
+      nonRepeatingType.rep(2, sep = "&"./)
+    ).map(mems => IntersectionType(mems))
   )
 
   // arrow (err: Error, data: Uint8Array, final: boolean) => void;
@@ -75,16 +94,21 @@ object Parser {
 
   // [ A , B ]
   def tupleType[_: P]: P[DataType] = P(
-    "[" ~/ dataType.rep(1, sep = ",") ~ "]"
+    "[" ~/ dataType.rep(1, sep = ",") ~ ",".? ~ "]"
   ).map(TupleType(_))
 
   def interfaceParameter[_: P] = P(parameter)
   def interfaceKey[_: P] = P("[" ~/ ident ~ ":" ~ dataType ~ "]" ~ ":" ~ dataType).map {
     case (name, keyType, returnType) => Key(name, keyType, returnType)
   }
+  def interfaceFunction[_: P] = P(
+    ident ~ argumentList ~/ ":" ~ dataType
+  ).map { case (name, args, returnType) =>
+    Argument(name, ArrowType(None, args, returnType), false)
+  }
 
   def objectType[_: P]: P[DataType] = P(
-    "{" ~/ (interfaceParameter | interfaceKey).rep(0, sep = ";") ~ ";".? ~ "}"
+    "{" ~/ (interfaceParameter | interfaceKey | interfaceFunction).rep(0, sep = ";") ~ ";".? ~ "}"
   ).map(mems => {
     val args = new ArrayBuffer[Argument]()
     val keys = new ArrayBuffer[Key]()
@@ -97,16 +121,16 @@ object Parser {
     ObjectType(args.toSeq, keys.toSeq)
   })
 
-  def nonUnionType[_: P]: P[DataType] = withArray(
+  def nonRepeatingType[_: P]: P[DataType] = withArray(
     P(
       arrowType | parameterizedType | baseType |
-        tupleType | stringType | objectType
+        tupleType | stringType | objectType | ("(" ~ dataType ~ ")")
     )
   )
 
   // Any datatype
   def dataType[_: P]: P[DataType] = P(
-    NoCut(unionType) | nonUnionType | withArray("(" ~ dataType ~ ")")
+    NoCut(unionType) | NoCut(intersectionType) | nonRepeatingType
   )
 
   //
@@ -118,7 +142,7 @@ object Parser {
   ).map { case (name: String, ext: Option[DataType], default: Option[DataType]) =>
     TypeParameterDecl(name, ext, default)
   }
-  def typeArgumentList[_: P] = P("<" ~/ typeArgument.rep(1, sep = ",") ~ ">")
+  def typeArgumentList[_: P] = P("<" ~/ typeArgument.rep(1, sep = ",") ~ ",".? ~ ">")
 
   def singleExtensionClause[_: P]: P[DataType] = P("extends" ~/ dataType)
   def singleDefaultClause[_: P]: P[DataType] = P("=" ~/ dataType)
@@ -129,11 +153,13 @@ object Parser {
   //
   // CLASS/OBJECT MEMBERS
   //
-  def getSet[_: P] = P(("get" | "set").!).map(str => if (str == "get") Getter else Setter)
+  def getSet[_: P] = P(("get " | "set ").!).map(str => if (str == "get") Getter else Setter)
 
   def privateMember[_: P] = P("private" ~/ CharsWhile(_ != ';') ~ ";")
 
-  def valueMember[_: P] = P("static".!.? ~ "readonly".!.? ~ identColonQ ~ dataType ~ ";").map {
+  def keyMember[_: P] = P(interfaceKey ~ ";").map(KeyMember(_))
+
+  def valueMember[_: P] = P("static".!.? ~ "readonly".!.? ~ identColonQorEq ~ dataType ~ ";").map {
     case (static, readOnly, (name, optional), typ) =>
       ValueMember(name, typ, optional, readOnly.isDefined, static.isDefined)
   }
@@ -141,25 +167,26 @@ object Parser {
   // NB: ignoring optional function members for now as we have no real way to model them in scala.
   def functionMember[_: P] =
     P(
-      getSet.? ~ "static".!.? ~ ident ~ typeArgumentList.? ~ "?".? ~ argumentList ~/ (":" ~ dataType).? ~ ";"
+      getSet.? ~ "static".!.? ~ ("protected" | "public").? ~ ident ~ typeArgumentList.? ~ "?".? ~ argumentList ~/ (":" ~ dataType).? ~ ";"
     ).map { case (gs, static, name, typArgs, args, ret) =>
       FnMember(name, typArgs, args, ret, gs, static.isDefined)
     }
 
   def constructor[_: P] = P("constructor" ~/ argumentList ~ ";").map(Constructor(_))
   def classMember[_: P]: P[Any] = P(constructor | functionMember | valueMember | privateMember)
-  def interfaceMember[_: P]: P[InterfaceMember] = P(valueMember | functionMember)
+  def interfaceMember[_: P]: P[InterfaceMember] = P(valueMember | functionMember | keyMember)
 
+  //
   // STATEMENTS
+  //
   def importStmt[_: P] = P("import" ~ CharsWhile(_ != ';') ~ ";")
-
   def indirectExport[_: P] = P("export" ~ "*" ~ "from" ~/ CharsWhile(_ != ';') ~ ";")
   def directExport[_: P] = P("export" ~ "{" ~/ CharsWhile(_ != ';') ~ ";")
-  def exportStmt[_: P] = P(directExport | indirectExport)
+  def defaultExport[_: P] = P("export" ~ "default" ~/ CharsWhile(_ != ';') ~ ";")
+  def exportStmt[_: P] = P(directExport | indirectExport | defaultExport)
 
   def nestedConstant[_: P] = P(("const" | "let") ~/ ident ~ ":" ~ dataType ~ ";").map {
-    case (name, typ) =>
-      Constant(name, typ)
+    case (name, typ) => Constant(name, typ)
   }
 
   def nestedFunction[_: P] = P("function" ~/ functionMember).map(Function(_))
@@ -171,8 +198,9 @@ object Parser {
     new Interface(name, args, members, exts)
   }
 
+  // Ignoring abstract classes
   def nestedClass[_: P] = P(
-    "class" ~/ ident ~ typeArgumentList.? ~ extensionClause.? ~ implementsClause.? ~ "{" ~
+    "abstract".? ~ "class" ~/ ident ~ typeArgumentList.? ~ extensionClause.? ~ implementsClause.? ~ "{" ~
       classMember.rep(0) ~ "}"
   ).map { case (name, typeArgs, extensions, implements, members) =>
     val values = ArrayBuffer[ValueMember]()
@@ -202,12 +230,12 @@ object Parser {
   ).map { case (name, typ) => TopLevelType(name, typ) }
 
   def digits[_: P] = P(CharsWhile(_.isDigit).!).map(_.toInt)
-  def enumString[_: P] = P("'" ~/ ident ~ "'").map(StringMem(_))
+  def enumString[_: P] = P(string).map(StringMem(_))
   def enumValue[_: P] = P(ident ~ "=" ~/ digits).map { case (name, value) => ValueMem(name, value) }
   def enumBasic[_: P] = P(ident).map(BasicMember(_))
   def enumMember[_: P] = P(enumValue | enumString | enumBasic)
   def nestedEnum[_: P] = P(
-    "enum" ~/ ident ~ "{" ~ enumMember.rep(0) ~ "}"
+    "enum" ~/ ident ~ "{" ~ enumMember.rep(0, sep = ",") ~ ",".? ~ "}"
   ).map { case (name, mems) =>
     TopLevelEnum(name, mems)
   }
@@ -228,17 +256,12 @@ object Parser {
   }
 
   def topConstant[_: P] = P("export" ~ nestedConstant)
-  def topFunction[_: P] = P("export" ~ nestedFunction)
+  def topFunction[_: P] = P(("export" | "declare") ~ nestedFunction)
   def topClass[_: P] = P("export" ~ nestedClass)
-  def topInterface[_: P] = P("export" ~ nestedInterface)
-  def topNamespace[_: P] = P("export" ~ namespace)
+  def topInterface[_: P] = P("export".? ~ nestedInterface)
+  def topNamespace[_: P] = P(("export" | "declare") ~ namespace)
   def topType[_: P] = P("export" ~ nestedType)
   def topEnum[_: P] = P("export" ~ nestedEnum)
-
-  //
-  //
-  //
-  def withEnd[_: P, T](p: => P[T]) = P(p ~ End)
 
   def topLevelStmt[_: P]: P[TopLevelStatement] = (
     topEnum | topInterface | topClass | topConstant | topType | topFunction | topNamespace
@@ -257,5 +280,13 @@ object Parser {
       )
     )
 
-  def run[_: P] = P(allTop ~ End)
+  def fullFile[_: P] = P(Start ~ allTop ~ End)
+
+  def run(fileText: String) =
+    fastparse.parse(fileText, fullFile(_))
 }
+
+// Preprocess:
+// data/src/renderers/webgl/WebGLCubeUVMaps.d.ts
+//  from >    get<T>(texture: T): T extends Texture ? Texture : T;
+//    to >    get<T extends Texture>(texture: T): T;

@@ -21,6 +21,10 @@ class TestParse extends AnyFunSuite {
       "parse<T extends Object3D>(json: any, onLoad?: (object: Object3D) => void): T;",
       functionMember(_)
     )
+    parseWhole("extends Material | Material[]", singleExtensionClause(_))
+    parseWhole("= Material | Material[]", singleDefaultClause(_))
+    parseWhole("f extends A = B", typeArgument(_))
+    parseWhole("TMaterial extends Material | Material[] = Material | Material[]", typeArgument(_))
   }
 
   test("interfaces") {
@@ -31,6 +35,28 @@ class TestParse extends AnyFunSuite {
         vertices: Vector3[];
     }""",
       topInterface(_)
+    )
+    parseWhole(
+      """export interface Event {
+        type: string;
+        target?: any;
+        [attachment: string]: any;
+    }""",
+      fullFile(_)
+    )
+  }
+
+  test("enums") {
+    parseWhole(
+      """export enum MOUSE {
+        LEFT = 0,
+        MIDDLE = 1,
+        RIGHT = 2,
+        ROTATE = 0,
+        DOLLY = 1,
+        PAN = 2,
+    }""",
+      fullFile(_)
     )
   }
 
@@ -133,6 +159,57 @@ class TestParse extends AnyFunSuite {
     }
     """,
       allTop(_)
+    )
+    parseWhole(
+      """/**
+     * Event object.
+     */
+    export interface Event {
+        type: string;
+        target?: any;
+        [attachment: string]: any;
+    }
+
+    /**
+     * JavaScript events for custom objects
+     *
+     * @source src/core/EventDispatcher.js
+     */
+    export class EventDispatcher {
+        /**
+         * Creates eventDispatcher object. It needs to be call with '.call' to add the functionality to an object.
+         */
+        constructor();
+
+        /**
+         * Adds a listener to an event type.
+         * @param type The type of event to listen to.
+         * @param listener The function that gets called when the event is fired.
+         */
+        addEventListener(type: string, listener: (event: Event) => void): void;
+
+        /**
+         * Checks if listener is added to an event type.
+         * @param type The type of event to listen to.
+         * @param listener The function that gets called when the event is fired.
+         */
+        hasEventListener(type: string, listener: (event: Event) => void): boolean;
+
+        /**
+         * Removes a listener from an event type.
+         * @param type The type of the listener that gets removed.
+         * @param listener The listener function that gets removed.
+         */
+        removeEventListener(type: string, listener: (event: Event) => void): void;
+
+        /**
+         * Fire an event type.
+         * @param type The type of event that gets fired.
+         */
+        dispatchEvent(event: { type: string;[attachment: string]: any }): void;
+    }
+    """,
+      fullFile(_)
     )
   }
 }
