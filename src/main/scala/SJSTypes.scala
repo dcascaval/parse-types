@@ -5,6 +5,21 @@ import scala.collection.mutable.Map
 import scala.collection.mutable.Set
 import javax.xml.crypto.Data
 
+class Lines(leaf: Seq[String], children: Buffer[Lines] = Buffer()) {
+  // Todo: might be more efficient to write this into a stringBuilder
+  // or directly into a file
+  def emit(indent: Int = 0): String = {
+    val tabs = "\t" * indent
+    val s1 = leaf.map(tabs + _).mkString("\n")
+    val s2 = children.map(_.emit(indent + 1)).mkString("\n")
+    s1 + s2
+  }
+}
+
+object Lines {
+  def apply(leaves: String*) = new Lines(leaves, Buffer())
+}
+
 object Emitter {
 
   def emitDecl(t: TypeParameterDecl): String = ???
@@ -73,32 +88,89 @@ object Emitter {
 import Emitter._
 
 sealed trait SJSTopLevel {
-  def emit(implicit ctx: TypeContext): String
+  def emit(implicit ctx: TypeContext): Lines
 }
 
 object SJSTopLevel {
   def empty: SJSTopLevel = new SJSTopLevel {
-    def emit(implicit ctx: TypeContext): String = ""
+    def emit(implicit ctx: TypeContext): Lines = new Lines(Seq(), Buffer())
   }
 }
 
-trait TraitDeclaration extends SJSTopLevel
-class NativeTrait extends TraitDeclaration {
-  def emit(implicit ctx: TypeContext): String = ???
-}
-class ScalaTrait extends TraitDeclaration {
-  def emit(implicit ctx: TypeContext): String = ???
+object Helpers {
+  def formatExtensions(extensions: Option[Seq[DataType]])(implicit ctx: TypeContext): String =
+    extensions
+      .map(exts => s"extends ${exts.map(emitType).mkString(" with ")}")
+      .getOrElse("extends js.Object")
+
+  def formatTypeArgs(args: Option[Seq[Generic]])(implicit ctx: TypeContext): String =
+    args.map(a => s"[${a.map(_.emit).mkString(",")}]").getOrElse("")
+
+  def formatArgList(originalArgs: ArgList)(implicit ctx: TypeContext): String = {
+    def formatArgument(a: Argument): String = {
+      val subType = emitType((a.dataType))
+      val typ = if (a.optional) { s"js.UndefOr[$subType] = js.undefined" }
+      else subType
+      s"${a.name}: $typ"
+    }
+
+    def formatVarArg(a: Argument): String = s"${a.name} : (${emitType(a.dataType)})*"
+
+    val args = originalArgs.args.map(formatArgument)
+    val argsAndVar = originalArgs.varArg match {
+      case Some(v) => args +: formatVarArg(v)
+      case None    => args
+    }
+    s"(${argsAndVar.mkString(", ")})"
+  }
 }
 
-class NativeClass extends SJSTopLevel {
-  def emit(implicit ctx: TypeContext): String = ???
+import Helpers._
+
+trait TraitDeclaration extends SJSTopLevel
+
+class NativeTrait(name: String, extensions: Option[Seq[DataType]], members: Seq[SJSTopLevel])
+    extends TraitDeclaration {
+  def emit(implicit ctx: TypeContext): Lines = {
+    val extendsClause = formatExtensions(extensions)
+    new Lines(Seq("@js.native" + s"trait $name $extendsClause:"), members.map(_.emit).toBuffer)
+  }
 }
-class TypeAlias(name: String, types: DataType) extends SJSTopLevel {
-  def emit(implicit ctx: TypeContext): String = ???
+
+class ScalaTrait(name: String, extensions: Option[Seq[DataType]], members: Seq[SJSTopLevel])
+    extends TraitDeclaration {
+  def emit(implicit ctx: TypeContext): Lines = {
+    val extendsClause = formatExtensions(extensions)
+    new Lines(Seq(s"trait $name $extendsClause:"), members.map(_.emit).toBuffer)
+  }
+}
+
+class NativeClass(
+    name: String,
+    typeArgs: Option[Seq[Generic]],
+    constructors: Seq[Constructor],
+    members: Buffer[SJSTopLevel],
+    extensions: Option[Seq[DataType]]
+) extends SJSTopLevel {
+  def emit(implicit ctx: TypeContext): Lines = {
+    val typPars = formatTypeArgs(typeArgs)
+
+    val ctors = constructors.map(ps => formatArgList(ps.parameters))
+
+    new Lines(
+      Seq("@js.native", s"class $name$typPars ${formatExtensions(extensions)}:"),
+      members.map(_.emit)
+    )
+  }
+}
+class TypeAlias(name: String, dataType: DataType) extends SJSTopLevel {
+  def emit(implicit ctx: TypeContext): Lines = {
+    Lines(s"type $name = ${emitType(dataType)}")
+  }
 }
 class NativeConstant(name: String, dataType: DataType) extends SJSTopLevel {
-  def emit(implicit ctx: TypeContext): String = {
-    s"val $name: ${emitType(dataType)} = js.native;"
+  def emit(implicit ctx: TypeContext): Lines = {
+    Lines(s"val $name: ${emitType(dataType)} = js.native;")
   }
 }
 
@@ -110,29 +182,10 @@ case class Generic(typ: String, superType: Option[DataType]) {
 
 class NativeFunction(name: String, typeArgs: Option[Seq[Generic]], args: Option[ArgList], ret: DataType)
     extends SJSTopLevel {
-  def emit(implicit ctx: TypeContext): String = {
-    val typPars = typeArgs.map(a => s"[${a.map(_.emit).mkString(",")}]").getOrElse("")
-
-    def formatArgument(a: Argument): String = {
-      val subType = emitType((a.dataType))
-      val typ = if (a.optional) { s"js.UndefOr[$subType] = js.undefined" }
-      else subType
-      s"${a.name}: $typ"
-    }
-
-    def formatVarArg(a: Argument): String = s"${a.name} : (${emitType(a.dataType)})*"
-
-    val apars = args
-      .map { a =>
-        val args = a.args.map(formatArgument)
-        val argsAndVar = a.varArg match {
-          case Some(v) => args +: formatVarArg(v)
-          case None    => args
-        }
-        s"(${argsAndVar.mkString(", ")})"
-      }
-      .getOrElse("")
-    s"def $name$typPars$apars: ${emitType(ret)}) = js.native"
+  def emit(implicit ctx: TypeContext): Lines = {
+    val typPars = formatTypeArgs(typeArgs)
+    val apars = args.map(formatArgList).getOrElse("")
+    Lines(s"def $name$typPars$apars: ${emitType(ret)}) = js.native")
   }
 }
 
@@ -140,35 +193,33 @@ class NativeObject(val name: String, jsName: String, val members: Buffer[SJSTopL
     extends SJSTopLevel {
   val imports = Buffer[String]()
 
-  def emit(implicit ctx: TypeContext): String = {
-    "@js.native" +
-      s"JSGlobal(\"$jsName\")" +
-      s"object $name extends js.Object:\n\t" +
-      members.map(_.emit).mkString("\n\t")
+  def emit(implicit ctx: TypeContext): Lines = {
+    new Lines(
+      Seq("@js.native", s"JSGlobal(\"$jsName\")", s"object $name extends js.Object:"),
+      members.map(_.emit)
+    )
   }
 }
 
 class CompanionObject(val name: String, val members: Buffer[SJSTopLevel] = Buffer())
     extends SJSTopLevel {
-  def emit(implicit ctx: TypeContext): String =
-    "object $name:\n\t" + members.map(_.emit).mkString("\n\t")
+  def emit(implicit ctx: TypeContext): Lines =
+    new Lines(Seq("object $name:"), members.map(_.emit))
 }
 
 // Special case the very common scala-js-defined parameter traits
 class ParameterClass(name: String, extensions: Seq[DataType], variables: Seq[(String, DataType)]) {
-  def emit(implicit context: TypeContext): String = {
+  def emit(implicit context: TypeContext): Lines = {
     val exts = extensions match {
       case Seq()       => "js.Object"
       case Seq(single) => s"$single"
       case _           => extensions.map(emitType).mkString(" with ")
     }
-    val header = s"trait $name extends $exts:\n"
-    val members = variables
-      .map { case (name, typ) =>
-        s"\tvar $name: ${emitType(typ)} = js.undefined"
-      }
-      .mkString("\n")
-    header + members
+    val header = s"trait $name extends $exts:"
+    val members = variables.map { case (name, typ) =>
+      Lines(s"var $name: ${emitType(typ)} = js.undefined")
+    }.toBuffer
+    new Lines(Seq(header), members)
   }
 }
 

@@ -81,10 +81,7 @@ case class Constructor(
 case class TypeParameterDecl(name: String, extension: Option[DataType], default: Option[DataType])
 
 class TransformContext(module: String) {
-  var currentModule = new NativeObject(
-    module.toLowerCase(),
-    "THREE"
-  )
+  var currentModule = module
   val companions = Map[String, CompanionObject]()
   def mergeToCompanion(name: String, member: SJSTopLevel) = {
     companions
@@ -94,14 +91,22 @@ class TransformContext(module: String) {
 
   val typeMapping = Map[String, DataType]()
 
-  def withDefaults(t: String) = {}
+  // def withDefaults[A](t: String)(f: => A): A = {}
+
+  def withCurrentModule[A](newModule: String)(f: => A): A = {
+    val old = currentModule
+    currentModule = newModule
+    val result = f
+    currentModule = old
+    result
+  }
 
   def addGlobalTypeDefault(t: TypeParameterDecl) = {
     t.default.map(default => typeMapping += ((t.name, default)))
   }
 
   // TODO: update to support shadowing correctly
-  def withLocalTypeDefault[A](t: TypeParameterDecl, f: => A): A = {
+  def withLocalTypeDefault[A](t: TypeParameterDecl)(f: => A): A = {
     t.default match {
       case Some(default) => {
         typeMapping += ((t.name, default))
@@ -181,13 +186,28 @@ class Class(
     extensions: Option[Seq[DataType]],
     implements: Option[DataType] // class Foo implements IFoo {}
 ) extends TopLevelStatement {
-  def transform(implicit ctx: TransformContext) = ???
+  def transform(implicit ctx: TransformContext) = {
+    withCurrentModule(name) {
+
+      // - Get statics into companion object
+      // - Transform constructors into standard functions
+      // - merge implements and extends clauses
+
+      // val fns = functions.map()
+    }
+    ???
+  }
 }
 
 // export type Foo = [number, number] | string;
 case class TopLevelType(name: String, dataType: DataType) extends TopLevelStatement {
-  def transform(implicit ctx: TransformContext) = ???
+  def transform(implicit ctx: TransformContext) = new TypeAlias(name, dataType)
 }
+
+object ReifyInterface {
+  // Convert an object type into a type alias and reference
+}
+
 //
 // export interface Foo<T = any> {
 //   bar: number;
@@ -227,7 +247,7 @@ case class Function(
     }
 
     if (static) {
-      ctx.companions(ctx.currentModule.name).members += fn
+      ctx.companions(ctx.currentModule).members += fn
       SJSTopLevel.empty
     } else {
       fn
