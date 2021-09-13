@@ -69,7 +69,7 @@ case class ValueMember(
       else new NativeConstant(name, t)
 
     if (static) {
-      ctx.companions(ctx.currentModule).members += result
+      ctx.mergeToCompanion(ctx.currentModule, result)
       SJSTopLevel.empty
     } else result
   }
@@ -104,7 +104,8 @@ case class TypeParameterDecl(name: String, extension: Option[DataType], default:
 
 class TransformContext(module: String) {
   var currentModule = module
-  val companions = Map[String, CompanionObject]()
+
+  private val companions = Map[String, CompanionObject]()
   def mergeToCompanion(name: String, member: SJSTopLevel) = {
     companions
       .getOrElseUpdate(name, new CompanionObject(name))
@@ -293,7 +294,7 @@ case class Function(
     }
 
     if (static) {
-      ctx.companions(ctx.currentModule).members += fn
+      ctx.mergeToCompanion(ctx.currentModule, fn)
       SJSTopLevel.empty
     } else {
       fn

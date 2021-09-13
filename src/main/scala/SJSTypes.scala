@@ -3,7 +3,6 @@ package tsparse
 import scala.collection.mutable.Buffer
 import scala.collection.mutable.Map
 import scala.collection.mutable.Set
-import javax.xml.crypto.Data
 
 class Lines(leaf: Seq[String], children: Buffer[Lines] = Buffer()) {
   // Todo: might be more efficient to write this into a stringBuilder
@@ -207,9 +206,26 @@ class NativeFunction(
   }
 }
 
-class NativeObject(val name: String, jsName: String, val members: Buffer[SJSTopLevel] = Buffer())
+class NativeObject(val name: String, jsName: String, members: Buffer[SJSTopLevel] = Buffer())
     extends SJSTopLevel {
   val imports = Buffer[String]()
+
+  val subObjects = Map.from(members.flatMap {
+    case a: NativeObject => Some((a.name, a))
+    case _               => None
+  })
+
+  def addMembers(mems: Seq[SJSTopLevel]): Unit = {
+    members ++= mems
+    for (mem <- mems) {
+      mem match {
+        case a: NativeObject => subObjects += ((a.name, a))
+        case _               => ()
+      }
+    }
+  }
+
+  def getMembers = members.toSeq
 
   def emit(implicit ctx: TypeContext): Lines = {
     new Lines(
