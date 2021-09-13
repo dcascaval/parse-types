@@ -58,7 +58,29 @@ case class ValueMember(
     optional: Boolean,
     readOnly: Boolean,
     static: Boolean
-) extends InterfaceMember
+) extends InterfaceMember {
+  def transform(implicit ctx: TransformContext) = {
+    val t =
+      if (optional) Parameterized("js.UndefOr", Seq(dataType))
+      else dataType
+
+    val result =
+      if (readOnly) new NativeValue(name, t)
+      else new NativeConstant(name, t)
+
+    if (static) {
+      ctx.companions(ctx.currentModule).members += result
+      SJSTopLevel.empty
+    } else result
+  }
+}
+
+object Transformers {
+  def makeGenerics(typeParameters: Option[Seq[TypeParameterDecl]]) =
+    typeParameters.map(ts => ts.map(t => Generic(t.name, t.extension)))
+}
+
+import Transformers._
 
 case class KeyMember(key: Key) extends InterfaceMember
 
@@ -187,15 +209,15 @@ class Class(
     implements: Option[DataType] // class Foo implements IFoo {}
 ) extends TopLevelStatement {
   def transform(implicit ctx: TransformContext) = {
-    withCurrentModule(name) {
-
-      // - Get statics into companion object
-      // - Transform constructors into standard functions
+    ctx.withCurrentModule(name) {
+      // - Statics are filtered into companion object
+      val fnMems = functions.map(f => Function(f).transform).toBuffer
+      val vals = values.map(_.transform).toBuffer
       // - merge implements and extends clauses
-
-      // val fns = functions.map()
+      val exts = extensions.zip(implements).map { case (a, b) => a ++ Seq(b) }
+      val typeArgs = makeGenerics(typeParameters)
+      new NativeClass(name, typeArgs, constructors, vals ++ fnMems, exts)
     }
-    ???
   }
 }
 
@@ -220,14 +242,38 @@ case class Interface(
     members: Seq[InterfaceMember],
     extensions: Option[Seq[DataType]]
 ) extends TopLevelStatement {
-  def transform(implicit ctx: TransformContext) = ???
+  def transform(implicit ctx: TransformContext) = {
+    ctx.withCurrentModule(name) {
+      val typeArgs = makeGenerics(parameters)
+      val transformMems = members.map { i =>
+        i match {
+          case v: ValueMember => v.transform
+          case f: FnMember    => Function(f).transform
+          case KeyMember(Key(name, t, ret)) => {
+            new NativeFunction(
+              "apply",
+              None,
+              Some(ArgList(Seq(Argument(name, t, false)), None)),
+              ret,
+              bracket = true
+            )
+          }
+        }
+      }
+      new NativeTrait(name, typeArgs, extensions, transformMems)
+    }
+  }
 }
 
 case class Namespace(
     name: String,
     members: Seq[TopLevelStatement]
 ) extends TopLevelStatement {
-  def transform(implicit ctx: TransformContext) = ???
+  def transform(implicit ctx: TransformContext) = {
+    ctx.withCurrentModule(name) {
+      new NativeObject(name, name, members.map(_.transform).toBuffer)
+    }
+  }
 }
 
 case class Function(
@@ -235,7 +281,7 @@ case class Function(
 ) extends TopLevelStatement {
   def transform(implicit ctx: TransformContext) = {
     val FnMember(name, t, args, ret, getSet, static) = value
-    val typeArgs = t.map(ts => ts.map(t => Generic(t.name, t.extension)))
+    val typeArgs = makeGenerics(t)
 
     val returnType = ret.getOrElse(Base("Unit"))
 

@@ -22,8 +22,6 @@ object Lines {
 
 object Emitter {
 
-  def emitDecl(t: TypeParameterDecl): String = ???
-
   class TypeContext {
     case class TypeKey(args: Seq[Argument], keys: Seq[Key])
 
@@ -129,11 +127,19 @@ import Helpers._
 
 trait TraitDeclaration extends SJSTopLevel
 
-class NativeTrait(name: String, extensions: Option[Seq[DataType]], members: Seq[SJSTopLevel])
-    extends TraitDeclaration {
+class NativeTrait(
+    name: String,
+    typeArgs: Option[Seq[Generic]],
+    extensions: Option[Seq[DataType]],
+    members: Seq[SJSTopLevel]
+) extends TraitDeclaration {
   def emit(implicit ctx: TypeContext): Lines = {
+    val typeParameters = formatTypeArgs(typeArgs)
     val extendsClause = formatExtensions(extensions)
-    new Lines(Seq("@js.native" + s"trait $name $extendsClause:"), members.map(_.emit).toBuffer)
+    new Lines(
+      Seq("@js.native" + s"trait $name$typeParameters $extendsClause:"),
+      members.map(_.emit).toBuffer
+    )
   }
 }
 
@@ -173,6 +179,11 @@ class NativeConstant(name: String, dataType: DataType) extends SJSTopLevel {
     Lines(s"val $name: ${emitType(dataType)} = js.native;")
   }
 }
+class NativeValue(name: String, dataType: DataType) extends SJSTopLevel {
+  def emit(implicit ctx: TypeContext): Lines = {
+    Lines(s"var $name: ${emitType(dataType)} = js.native;")
+  }
+}
 
 case class Generic(typ: String, superType: Option[DataType]) {
   def emit(implicit ctx: TypeContext): String = {
@@ -180,12 +191,19 @@ case class Generic(typ: String, superType: Option[DataType]) {
   }
 }
 
-class NativeFunction(name: String, typeArgs: Option[Seq[Generic]], args: Option[ArgList], ret: DataType)
-    extends SJSTopLevel {
+class NativeFunction(
+    name: String,
+    typeArgs: Option[Seq[Generic]],
+    args: Option[ArgList],
+    ret: DataType,
+    bracket: Boolean = false
+) extends SJSTopLevel {
   def emit(implicit ctx: TypeContext): Lines = {
     val typPars = formatTypeArgs(typeArgs)
     val apars = args.map(formatArgList).getOrElse("")
-    Lines(s"def $name$typPars$apars: ${emitType(ret)}) = js.native")
+    val annots = if (bracket) Seq("@JSBracketAccess") else Seq()
+    val defn = s"def $name$typPars$apars: ${emitType(ret)}) = js.native"
+    new Lines(annots ++ Seq(defn))
   }
 }
 
@@ -204,7 +222,7 @@ class NativeObject(val name: String, jsName: String, val members: Buffer[SJSTopL
 class CompanionObject(val name: String, val members: Buffer[SJSTopLevel] = Buffer())
     extends SJSTopLevel {
   def emit(implicit ctx: TypeContext): Lines =
-    new Lines(Seq("object $name:"), members.map(_.emit))
+    new Lines(Seq(s"object $name:"), members.map(_.emit))
 }
 
 // Special case the very common scala-js-defined parameter traits
