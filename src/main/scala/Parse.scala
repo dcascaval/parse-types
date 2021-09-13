@@ -47,7 +47,7 @@ object Parser {
     "(" ~ parameter.rep(0, sep = ",") ~
       (",".? ~ "..." ~/ ident ~ ":" ~ dataType).? ~ ",".? ~ ")"
   ).map { case (args, varArg) =>
-    new ArgList(args, varArg.map(_._2))
+    ArgList(args, varArg.map { case (name, t) => Argument(name, t, false) })
   }
 
   //

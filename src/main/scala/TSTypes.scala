@@ -1,6 +1,8 @@
 package tsparse
 
-import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.Buffer
+import scala.collection.mutable.Map
+import scala.annotation.meta.companionObject
 
 // all of the different possible types
 sealed trait DataType
@@ -39,8 +41,8 @@ object Argument {
   }
 }
 
-// foo(a: bar, b: number, ...args: any[])
-case class ArgList(args: Seq[Argument], varArg: Option[DataType])
+// foo(a: bar, b: number, ...args[])
+case class ArgList(args: Seq[Argument], varArg: Option[Argument])
 
 sealed trait GetSetState
 case object Getter extends GetSetState
@@ -78,13 +80,53 @@ case class Constructor(
 // will instead remember the default and replace it at all invocation sites.
 case class TypeParameterDecl(name: String, extension: Option[DataType], default: Option[DataType])
 
-sealed trait TopLevelStatement
+class TransformContext(module: String) {
+  var currentModule = new NativeObject(
+    module.toLowerCase(),
+    "THREE"
+  )
+  val companions = Map[String, CompanionObject]()
+  def mergeToCompanion(name: String, member: SJSTopLevel) = {
+    companions
+      .getOrElseUpdate(name, new CompanionObject(name))
+      .members += member
+  }
+
+  val typeMapping = Map[String, DataType]()
+
+  def withDefaults(t: String) = {}
+
+  def addGlobalTypeDefault(t: TypeParameterDecl) = {
+    t.default.map(default => typeMapping += ((t.name, default)))
+  }
+
+  // TODO: update to support shadowing correctly
+  def withLocalTypeDefault[A](t: TypeParameterDecl, f: => A): A = {
+    t.default match {
+      case Some(default) => {
+        typeMapping += ((t.name, default))
+        val result = f
+        typeMapping -= t.name
+        result
+      }
+      case None => f
+    }
+
+  }
+}
+
+sealed trait TopLevelStatement {
+  def transform(implicit ctx: TransformContext): SJSTopLevel
+}
 
 // export const foo: A;
 case class Constant(
     name: String,
     dataType: DataType
-) extends TopLevelStatement
+) extends TopLevelStatement {
+  def transform(implicit ctx: TransformContext) =
+    new NativeConstant(name, dataType)
+}
 
 sealed trait EnumMember
 case class StringMem(value: String) extends EnumMember
@@ -97,7 +139,33 @@ case class BasicMember(name: String) extends EnumMember
 case class TopLevelEnum(
     name: String,
     options: Seq[EnumMember]
-) extends TopLevelStatement
+) extends TopLevelStatement {
+
+  def transform(implicit ctx: TransformContext): SJSTopLevel = {
+    val allStrings = options.flatMap[StringType](mem =>
+      mem match {
+        case StringMem(s) => Some(StringType(s))
+        case _            => None
+      }
+    )
+    if (allStrings.length == options.length) {
+      new TypeAlias(name, UnionType(allStrings))
+    } else {
+      val members = options
+        .flatMap[String](mem =>
+          mem match {
+            case BasicMember(name) => Some(name)
+            case StringMem(value)  => None
+            case ValueMem(name, _) => Some(name)
+          }
+        )
+        .map[SJSTopLevel](memName => new NativeConstant(memName, Base(name)))
+        .toBuffer
+
+      new NativeObject(name, s"THREE.$name", members)
+    }
+  }
+}
 
 // export class Foo extends Bar {
 //   constructor(params?: ParamType);  // constructor
@@ -112,11 +180,14 @@ class Class(
     constructors: Seq[Constructor],
     extensions: Option[Seq[DataType]],
     implements: Option[DataType] // class Foo implements IFoo {}
-) extends TopLevelStatement
+) extends TopLevelStatement {
+  def transform(implicit ctx: TransformContext) = ???
+}
 
 // export type Foo = [number, number] | string;
-case class TopLevelType(name: String, dataType: DataType) extends TopLevelStatement
-
+case class TopLevelType(name: String, dataType: DataType) extends TopLevelStatement {
+  def transform(implicit ctx: TransformContext) = ???
+}
 //
 // export interface Foo<T = any> {
 //   bar: number;
@@ -128,13 +199,38 @@ case class Interface(
     parameters: Option[Seq[TypeParameterDecl]],
     members: Seq[InterfaceMember],
     extensions: Option[Seq[DataType]]
-) extends TopLevelStatement
+) extends TopLevelStatement {
+  def transform(implicit ctx: TransformContext) = ???
+}
 
 case class Namespace(
     name: String,
     members: Seq[TopLevelStatement]
-) extends TopLevelStatement
+) extends TopLevelStatement {
+  def transform(implicit ctx: TransformContext) = ???
+}
 
 case class Function(
     value: FnMember
-) extends TopLevelStatement
+) extends TopLevelStatement {
+  def transform(implicit ctx: TransformContext) = {
+    val FnMember(name, t, args, ret, getSet, static) = value
+    val typeArgs = t.map(ts => ts.map(t => Generic(t.name, t.extension)))
+
+    val returnType = ret.getOrElse(Base("Unit"))
+
+    val fn = getSet match {
+      case Some(Getter) => // def $name: ret
+        new NativeFunction(name, typeArgs, None, returnType)
+      case _ => // def $name<$T>($args) : ret
+        new NativeFunction(name, typeArgs, Some(args), returnType)
+    }
+
+    if (static) {
+      ctx.companions(ctx.currentModule.name).members += fn
+      SJSTopLevel.empty
+    } else {
+      fn
+    }
+  }
+}

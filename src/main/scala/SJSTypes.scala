@@ -1,8 +1,9 @@
 package tsparse
 
-import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.Buffer
 import scala.collection.mutable.Map
 import scala.collection.mutable.Set
+import javax.xml.crypto.Data
 
 object Emitter {
 
@@ -71,13 +72,90 @@ object Emitter {
 
 import Emitter._
 
-sealed trait FacadeObject {
+sealed trait SJSTopLevel {
   def emit(implicit ctx: TypeContext): String
 }
 
+object SJSTopLevel {
+  def empty: SJSTopLevel = new SJSTopLevel {
+    def emit(implicit ctx: TypeContext): String = ""
+  }
+}
+
+trait TraitDeclaration extends SJSTopLevel
+class NativeTrait extends TraitDeclaration {
+  def emit(implicit ctx: TypeContext): String = ???
+}
+class ScalaTrait extends TraitDeclaration {
+  def emit(implicit ctx: TypeContext): String = ???
+}
+
+class NativeClass extends SJSTopLevel {
+  def emit(implicit ctx: TypeContext): String = ???
+}
+class TypeAlias(name: String, types: DataType) extends SJSTopLevel {
+  def emit(implicit ctx: TypeContext): String = ???
+}
+class NativeConstant(name: String, dataType: DataType) extends SJSTopLevel {
+  def emit(implicit ctx: TypeContext): String = {
+    s"val $name: ${emitType(dataType)} = js.native;"
+  }
+}
+
+case class Generic(typ: String, superType: Option[DataType]) {
+  def emit(implicit ctx: TypeContext): String = {
+    superType.map(default => s"$typ <: ${emitType(default)}}").getOrElse(typ)
+  }
+}
+
+class NativeFunction(name: String, typeArgs: Option[Seq[Generic]], args: Option[ArgList], ret: DataType)
+    extends SJSTopLevel {
+  def emit(implicit ctx: TypeContext): String = {
+    val typPars = typeArgs.map(a => s"[${a.map(_.emit).mkString(",")}]").getOrElse("")
+
+    def formatArgument(a: Argument): String = {
+      val subType = emitType((a.dataType))
+      val typ = if (a.optional) { s"js.UndefOr[$subType] = js.undefined" }
+      else subType
+      s"${a.name}: $typ"
+    }
+
+    def formatVarArg(a: Argument): String = s"${a.name} : (${emitType(a.dataType)})*"
+
+    val apars = args
+      .map { a =>
+        val args = a.args.map(formatArgument)
+        val argsAndVar = a.varArg match {
+          case Some(v) => args +: formatVarArg(v)
+          case None    => args
+        }
+        s"(${argsAndVar.mkString(", ")})"
+      }
+      .getOrElse("")
+    s"def $name$typPars$apars: ${emitType(ret)}) = js.native"
+  }
+}
+
+class NativeObject(val name: String, jsName: String, val members: Buffer[SJSTopLevel] = Buffer())
+    extends SJSTopLevel {
+  val imports = Buffer[String]()
+
+  def emit(implicit ctx: TypeContext): String = {
+    "@js.native" +
+      s"JSGlobal(\"$jsName\")" +
+      s"object $name extends js.Object:\n\t" +
+      members.map(_.emit).mkString("\n\t")
+  }
+}
+
+class CompanionObject(val name: String, val members: Buffer[SJSTopLevel] = Buffer())
+    extends SJSTopLevel {
+  def emit(implicit ctx: TypeContext): String =
+    "object $name:\n\t" + members.map(_.emit).mkString("\n\t")
+}
+
 // Special case the very common scala-js-defined parameter traits
-class ParameterClass(name: String, extensions: Seq[DataType], variables: Seq[(String, DataType)])
-    extends FacadeObject {
+class ParameterClass(name: String, extensions: Seq[DataType], variables: Seq[(String, DataType)]) {
   def emit(implicit context: TypeContext): String = {
     val exts = extensions match {
       case Seq()       => "js.Object"
@@ -95,88 +173,95 @@ class ParameterClass(name: String, extensions: Seq[DataType], variables: Seq[(St
 }
 
 // type => type
-class TypeDeclaration(name: String, t: DataType) extends FacadeObject {
-  def emit(implicit ctx: TypeContext) = s"type $name = ${emitType(t)}"
-}
+
+// class TypeDeclaration(name: String, t: DataType) extends FacadeObject {
+//   def emit(implicit ctx: TypeContext) = s"type $name = ${emitType(t)}"
+// }
 
 // function => top-level function with
 //
 //        @js.native
 //        @JSGlobal(THREE.foo)
 //        def foo() = ...
-class FunctionDeclaration(name: String, args: Seq[Argument], ret: DataType) extends FacadeObject {
-  def emit(implicit ctx: TypeContext) = {
-    val argList = args
-      .map(a => {
-        val typeName = emitType(a.dataType)
-        val t = if (a.optional) s"js.UndefOr[$typeName]" else typeName
-        s"${a.name}: $t"
-      })
-      .mkString(", ")
-    Seq("@js.native", s"@JSGlobal(\"THREE.$name\")", s"def $name($argList) = js.native")
-      .mkString("\n")
-  }
-}
+
+// class FunctionDeclaration(name: String, args: Seq[Argument], ret: DataType) extends FacadeObject {
+//   def emit(implicit ctx: TypeContext) = {
+//     val argList = args
+//       .map(a => {
+//         val typeName = emitType(a.dataType)
+//         val t = if (a.optional) s"js.UndefOr[$typeName]" else typeName
+//         s"${a.name}: $t"
+//       })
+//       .mkString(", ")
+//     Seq("@js.native", s"@JSGlobal(\"THREE.$name\")", s"def $name($argList) = js.native")
+//       .mkString("\n")
+//   }
+// }
 
 // value => value
 // (also global, as functions)
-class ValueDeclaration(name: String, typ: DataType) extends FacadeObject {
-  def emit(implicit ctx: TypeContext) = {
-    Seq("@js.native", s"@JSGlobal(\"THREE.$name\")", s"const $name : ${emitType(typ)} = js.native")
-      .mkString("\n")
-  }
-}
+
+// class ValueDeclaration(name: String, typ: DataType) extends FacadeObject {
+//   def emit(implicit ctx: TypeContext) = {
+//     Seq("@js.native", s"@JSGlobal(\"THREE.$name\")", s"const $name : ${emitType(typ)} = js.native")
+//       .mkString("\n")
+//   }
+// }
 
 // enum => @js.native sealed trait,
 //         with fields in companion object and @JSBracketAcess apply().
 //         their actual contained values are irrelevant.
-class EnumDeclaration(name: String, members: Seq[EnumMember]) extends FacadeObject {
-  def emit(implicit ctx: TypeContext): String = {
-    val allStrings = members.flatMap[StringMem](mem =>
-      mem match {
-        case s: StringMem => Some(s)
-        case _            => None
-      }
-    )
-    if (allStrings.length == members.length) {
-      s"type $name = ${allStrings.map(_.value).mkString(" | ")}"
-    } else {
-      val memberNames = members
-        .flatMap[String](mem =>
-          mem match {
-            case BasicMember(name) => Some(name)
-            case StringMem(value)  => None
-            case ValueMem(name, _) => Some(name)
-          }
-        )
-        .map(memName => s"\tvar $memName : $name = js.native")
-      (Seq(
-        "@js.native",
-        s"@JSGlobal(\"THREE.${name}\")",
-        s"object $name extends js.Object:"
-      ) ++ memberNames).mkString("\n")
-    }
-  }
-}
+
+// class EnumDeclaration(name: String, members: Seq[EnumMember]) extends FacadeObject {
+//   def emit(implicit ctx: TypeContext): String = {
+//     val allStrings = members.flatMap[StringMem](mem =>
+//       mem match {
+//         case s: StringMem => Some(s)
+//         case _            => None
+//       }
+//     )
+//     if (allStrings.length == members.length) {
+//       s"type $name = ${allStrings.map(_.value).mkString(" | ")}"
+//     } else {
+//       val memberNames = members
+//         .flatMap[String](mem =>
+//           mem match {
+//             case BasicMember(name) => Some(name)
+//             case StringMem(value)  => None
+//             case ValueMem(name, _) => Some(name)
+//           }
+//         )
+//         .map(memName => s"\tvar $memName : $name = js.native")
+//       (Seq(
+//         "@js.native",
+//         s"@JSGlobal(\"THREE.${name}\")",
+//         s"object $name extends js.Object:"
+//       ) ++ memberNames).mkString("\n")
+//     }
+//   }
+// }
 
 // interface => @js.native trait
-class InterfaceDeclaration(name: String, members: Seq[InterfaceMember]) extends FacadeObject {
-  def emit(implicit ctx: TypeContext): String = {
-    ???
-  }
-}
+
+// class InterfaceDeclaration(name: String, members: Seq[InterfaceMember]) extends FacadeObject {
+//   def emit(implicit ctx: TypeContext): String = {
+//     ???
+//   }
+// }
 
 // class => @js.native class
 // - constructors: def this(args) = this()
 // - static methods: companion object
-class ClassDeclaration(name: String)
+
+// class ClassDeclaration(name: String)
 
 // namespace => static scala object
-class NamespaceDeclaration(name: String, members: Seq[TopLevelStatement]) extends FacadeObject {
-  def emit(implicit ctx: TypeContext): String = {
-    ???
-  }
-}
+
+// class NamespaceDeclaration(name: String, members: Seq[TopLevelStatement]) extends FacadeObject {
+//   def emit(implicit ctx: TypeContext): String = {
+//     ???
+//   }
+// }
 
 // Transformations we need to make everything work:
 //
@@ -184,6 +269,8 @@ class NamespaceDeclaration(name: String, members: Seq[TopLevelStatement]) extend
 //  - static methods and values need to be placed into a companion object
 //  - methods with the same signature as an identically-named method in a trait they are
 //    extending should be removed.
+//  - parameterized types with a default type argument will have that argument detected
+//    and then substituted at all invocation sites of this type.
 //  - methods with names reserved in scala (`clone`, `val`, `then`) should be converted
 //    to scala names (`cloned`, `value`, `andThen`) if there is no conflict
 //  - type parameters on arrow types are lifted to the nearest scope that can provide a type parameter in Scala,
@@ -225,4 +312,4 @@ class NamespaceDeclaration(name: String, members: Seq[TopLevelStatement]) extend
 // these access the same JS object at runtime. By default we will have
 // everything import everything else.
 
-class FacadeModule(name: String, members: ArrayBuffer[FacadeObject])
+// class FacadeModule(name: String, members: Buffer[SJSTopLevel])
