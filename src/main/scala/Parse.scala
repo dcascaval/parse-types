@@ -40,7 +40,7 @@ object Parser {
   // PARAMETERS
   def parameter[_: P]: P[Argument] =
     P(identColonQ ~ dataType).map { case (name: String, optional: Boolean, data: DataType) =>
-      Argument.fromRaw(name, data, optional)
+      Argument(name, data, optional)
     }
 
   def argumentList[_: P]: P[ArgList] = P(

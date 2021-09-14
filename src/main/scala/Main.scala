@@ -126,6 +126,11 @@ object Main extends App {
     }
   }
 
+  def parseRootDirectory(path: Seq[String], file: File): Seq[FileResult] = {
+    // Assuming this is, in fact, a directory.
+    file.listFiles().toSeq.flatMap(f => parseDirectory(path, f))
+  }
+
   // parseDirectory(Seq("examples"), new File("data/examples"))
   // parseDirectory(Seq(), new File("data/src"))
 
@@ -135,9 +140,16 @@ object Main extends App {
     val rootModule = new NativeObject("GLOBAL", "")
 
     def getOrCreateModule(path: Seq[String], root: NativeObject = rootModule): NativeObject = {
-      def newModule(name: String) = new NativeObject(name, s"THREE.$name")
+      def newModule(name: String) = new NativeObject(name, s"THREE", Buffer(), true)
       path.foldLeft(rootModule) { case (mod, name) =>
-        mod.subObjects.getOrElseUpdate(name, newModule(name))
+        mod.subObjects.get(name) match {
+          case Some(value) => value
+          case None => {
+            val result = newModule(name)
+            mod.addMembers(Seq(result))
+            result
+          }
+        }
       }
     }
 
@@ -145,33 +157,87 @@ object Main extends App {
       val (path, tree) = result
       val module = getOrCreateModule(path)
       module.addMembers(tree.map(_.transform))
+      module.addMembers(transformContext.resetCompanions())
     }
 
     rootModule.getMembers
   }
 
-  def emit(stmts: Seq[SJSTopLevel]) = {
-    val fileNames = Seq("three") ++ stmts.flatMap {
-      case a: NativeObject => Some(a.name)
-      case _               => None
+  val headers = Lines(
+    "package typings.three",
+    "",
+    "import scala.scalajs.js",
+    "import js.annotation.*",
+    "import org.scalajs.dom.*",
+    "import scalajs.js.typedarray.*",
+    ""
+  ).emit()
+
+  val globalDefintions = Lines(
+    "type ArrayLike[T] = js.native;"
+  )
+
+  def emit(outDir: String, stmts: Seq[SJSTopLevel]) = {
+
+    def allModuleNames(stmt: SJSTopLevel, prefix: Option[String] = None): Seq[String] = {
+      stmt match {
+        case a: NativeObject if a.isModule => {
+          val nextPrefix = prefix.map(p => s"$p.${a.name}").getOrElse(a.name)
+          Seq(nextPrefix) ++ a.subObjects.values.flatMap(so => allModuleNames(so, Some(nextPrefix)))
+        }
+        case _ => Seq()
+      }
     }
+
+    def getModuleName(stmt: SJSTopLevel): Option[String] = {
+      stmt match {
+        case a: NativeObject if a.isModule => Some(a.name)
+        case _                             => None
+      }
+    }
+
+    val allModules = stmts.flatMap(s => allModuleNames(s))
+    val moduleNames = stmts.flatMap(getModuleName)
+    val fileNames = Seq("three") ++ moduleNames
     val files: Map[String, Buffer[Lines]] = Map.from(fileNames.map(name => (name, Buffer[Lines]())))
+
+    def imports(currentModule: String) =
+      new Lines(
+        allModules
+          .filter(_ != currentModule)
+          .map(mod => s"import typings.three.$mod.*")
+      ).pad()
 
     implicit val ctx = new Emitter.TypeContext()
 
     for (obj <- stmts) {
-      obj match {
-        case a: NativeObject => files(a.name) += a.emit
-        case _               => files("three") += obj.emit
-      }
+      val fileName = getModuleName(obj).getOrElse("three")
+      files(fileName) += obj.emit
+      files(fileName) += new Lines(Seq(), ctx.resetTypes().map(_.emit).toBuffer)
     }
 
-    for ((name, lines) <- files) {
-      val fileText = lines.map(_.emit()).mkString("\n")
-      writeFileText(s"out/$name.scala", fileText)
+    for ((name, objs) <- files) {
+
+      val fileText = if (name != "three") {
+        val currentImports = imports(name)
+        headers + objs.map(_.prependChildren(currentImports).emit()).mkString("\n")
+      } else {
+        val currentImports = imports(name).emit()
+        val globalDefs = globalDefintions.emit()
+        headers + globalDefs + currentImports + objs.map(_.emit()).mkString("\n")
+      }
+      writeFileText(s"$outDir/$name.scala", fileText)
     }
   }
 
-  emit(transform(parseDirectory(Seq(), new File("data/src"))))
+  emit(
+    "out/src/main/scala",
+    transform(parseRootDirectory(Seq(), new File("data/src")))
+  )
 
 }
+
+//  EXPORTING TODOs:
+//  - Add Missing type definitions
+//  - Sanitize method names
+//  - Apply default type arguments

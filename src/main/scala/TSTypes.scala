@@ -21,26 +21,6 @@ case class ObjectType(members: Seq[Argument], keys: Seq[Key]) extends DataType /
 case class Argument(name: String, dataType: DataType, optional: Boolean)
 case class Key(name: String, dataType: DataType, returnType: DataType)
 
-object Argument {
-  def fromRaw(name: String, data: DataType, optional: Boolean): Argument = {
-    // When we have an optional argument that includes undefined in the type
-    // member, we can safely remove undefined from the union type.
-    if (optional) {
-      data match {
-        case UnionType(members) => {
-          val withoutUndefined = members.filter(_ != Base("undefined"))
-          withoutUndefined match {
-            case Seq(single) => return Argument(name, single, optional)
-            case rest        => return Argument(name, UnionType(withoutUndefined), optional)
-          }
-        }
-        case _ => ()
-      }
-    }
-    Argument(name, data, optional)
-  }
-}
-
 // foo(a: bar, b: number, ...args[])
 case class ArgList(args: Seq[Argument], varArg: Option[Argument])
 
@@ -49,7 +29,12 @@ case object Getter extends GetSetState
 case object Setter extends GetSetState
 
 sealed trait Member
-sealed trait InterfaceMember extends Member
+
+sealed trait InterfaceMember extends Member {
+  def transform(implicit ctx: TransformContext): SJSTopLevel
+}
+
+import Helpers._
 
 // [readonly] foo: A;
 case class ValueMember(
@@ -60,9 +45,7 @@ case class ValueMember(
     static: Boolean
 ) extends InterfaceMember {
   def transform(implicit ctx: TransformContext) = {
-    val t =
-      if (optional) Parameterized("js.UndefOr", Seq(dataType))
-      else dataType
+    val t = reifyOptional(dataType, optional)
 
     val result =
       if (readOnly) new NativeValue(name, t)
@@ -75,14 +58,18 @@ case class ValueMember(
   }
 }
 
-object Transformers {
-  def makeGenerics(typeParameters: Option[Seq[TypeParameterDecl]]) =
-    typeParameters.map(ts => ts.map(t => Generic(t.name, t.extension)))
+case class KeyMember(key: Key) extends InterfaceMember {
+  def transform(implicit ctx: TransformContext): SJSTopLevel = {
+    val Key(name, t, ret) = key
+    new NativeFunction(
+      "apply",
+      None,
+      Some(ArgList(Seq(Argument(name, t, false)), None)),
+      ret,
+      bracket = true
+    )
+  }
 }
-
-import Transformers._
-
-case class KeyMember(key: Key) extends InterfaceMember
 
 // setFoo(foo: A, bar?: B);
 case class FnMember(
@@ -92,7 +79,9 @@ case class FnMember(
     returnType: Option[DataType],
     getSet: Option[GetSetState],
     static: Boolean // Mutually exclusive with get/set
-) extends InterfaceMember
+) extends InterfaceMember {
+  def transform(implicit ctx: TransformContext): SJSTopLevel = Function(this).transform
+}
 
 case class Constructor(
     parameters: ArgList
@@ -102,6 +91,13 @@ case class Constructor(
 // will instead remember the default and replace it at all invocation sites.
 case class TypeParameterDecl(name: String, extension: Option[DataType], default: Option[DataType])
 
+object Transformers {
+  def makeGenerics(typeParameters: Option[Seq[TypeParameterDecl]]) =
+    typeParameters.map(ts => ts.map(t => Generic(t.name, t.extension)))
+}
+
+import Transformers._
+
 class TransformContext(module: String) {
   var currentModule = module
 
@@ -110,6 +106,12 @@ class TransformContext(module: String) {
     companions
       .getOrElseUpdate(name, new CompanionObject(name))
       .members += member
+  }
+
+  def resetCompanions(): Seq[SJSTopLevel] = {
+    val result = companions.values.toSeq
+    companions.clear()
+    result
   }
 
   val typeMapping = Map[String, DataType]()
@@ -176,8 +178,11 @@ case class TopLevelEnum(
         case _            => None
       }
     )
-    if (allStrings.length == options.length) {
+
+    if (allStrings.length == options.length && allStrings.length > 0) {
       new TypeAlias(name, UnionType(allStrings))
+    } else if (options.length == 0) {
+      new NativeTrait(name, None, None, Seq())
     } else {
       val members = options
         .flatMap[String](mem =>
@@ -188,9 +193,10 @@ case class TopLevelEnum(
           }
         )
         .map[SJSTopLevel](memName => new NativeConstant(memName, Base(name)))
-        .toBuffer
+        .map(mem => ctx.mergeToCompanion(name, mem))
 
-      new NativeObject(name, s"THREE.$name", members)
+      new NativeTrait(name, None, None, Seq())
+      // new NativeObject(name, s"THREE.$name", members)
     }
   }
 }
@@ -227,10 +233,6 @@ case class TopLevelType(name: String, dataType: DataType) extends TopLevelStatem
   def transform(implicit ctx: TransformContext) = new TypeAlias(name, dataType)
 }
 
-object ReifyInterface {
-  // Convert an object type into a type alias and reference
-}
-
 //
 // export interface Foo<T = any> {
 //   bar: number;
@@ -246,21 +248,13 @@ case class Interface(
   def transform(implicit ctx: TransformContext) = {
     ctx.withCurrentModule(name) {
       val typeArgs = makeGenerics(parameters)
-      val transformMems = members.map { i =>
-        i match {
-          case v: ValueMember => v.transform
-          case f: FnMember    => Function(f).transform
-          case KeyMember(Key(name, t, ret)) => {
-            new NativeFunction(
-              "apply",
-              None,
-              Some(ArgList(Seq(Argument(name, t, false)), None)),
-              ret,
-              bracket = true
-            )
-          }
-        }
-      }
+      val transformMems = members.map(_.transform)
+      // i match {
+      // case v: ValueMember => v.transform
+      // case f: FnMember    => Function(f).transform
+
+      // }
+      // }
       new NativeTrait(name, typeArgs, extensions, transformMems)
     }
   }
