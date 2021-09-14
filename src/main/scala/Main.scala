@@ -169,12 +169,16 @@ object Main extends App {
     "import scala.scalajs.js",
     "import js.annotation.*",
     "import org.scalajs.dom.*",
+    "import org.scalajs.dom.raw.{HTMLMediaElement}",
     "import scalajs.js.typedarray.*",
     ""
   ).emit()
 
+  // Usually imports from TS Stdlib
   val globalDefintions = Lines(
-    "type ArrayLike[T] = js.native;"
+    "type ArrayLike[T] = js.native",
+    "type WebGLBuffer = js.native",
+    "type MediaStream = js.native"
   )
 
   def emit(outDir: String, stmts: Seq[SJSTopLevel]) = {
@@ -241,3 +245,9 @@ object Main extends App {
 //  - Add Missing type definitions
 //  - Sanitize method names
 //  - Apply default type arguments
+//  - Double-definitions with js.UndefOr[Double] and js.UndefOr[Double] on `toArray()`
+
+//  - Filter "three" from imports
+//  - Remove imports that have the current object as a parent.
+//  - Why are we duplicating imports? For the extra objectTypeN defns?
+//  - Namespaces conflict with companion objects -> check if the companion exists before creating it
