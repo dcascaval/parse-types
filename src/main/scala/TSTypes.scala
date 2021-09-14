@@ -3,6 +3,7 @@ package tsparse
 import scala.collection.mutable.Buffer
 import scala.collection.mutable.Map
 import scala.annotation.meta.companionObject
+import javax.xml.crypto.Data
 
 // all of the different possible types
 sealed trait DataType
@@ -92,8 +93,13 @@ case class Constructor(
 case class TypeParameterDecl(name: String, extension: Option[DataType], default: Option[DataType])
 
 object Transformers {
-  def makeGenerics(typeParameters: Option[Seq[TypeParameterDecl]]) =
-    typeParameters.map(ts => ts.map(t => Generic(t.name, t.extension)))
+  def makeGenerics(objectName: Option[String], typeParameters: Option[Seq[TypeParameterDecl]])(implicit
+      ctx: TransformContext
+  ) =
+    typeParameters.map(ts => {
+      objectName.map(name => ctx.addGlobalTypeDefault(name, ts))
+      ts.map(t => Generic(t.name, t.extension))
+    })
 }
 
 import Transformers._
@@ -114,10 +120,6 @@ class TransformContext(module: String) {
     result
   }
 
-  val typeMapping = Map[String, DataType]()
-
-  // def withDefaults[A](t: String)(f: => A): A = {}
-
   def withCurrentModule[A](newModule: String)(f: => A): A = {
     val old = currentModule
     currentModule = newModule
@@ -126,23 +128,12 @@ class TransformContext(module: String) {
     result
   }
 
-  def addGlobalTypeDefault(t: TypeParameterDecl) = {
-    t.default.map(default => typeMapping += ((t.name, default)))
+  val typeMapping = Map[String, Seq[DataType]]()
+
+  def addGlobalTypeDefault(objectName: String, t: Seq[TypeParameterDecl]) = {
+    typeMapping += ((objectName, t.flatMap(_.default)))
   }
 
-  // TODO: update to support shadowing correctly
-  def withLocalTypeDefault[A](t: TypeParameterDecl)(f: => A): A = {
-    t.default match {
-      case Some(default) => {
-        typeMapping += ((t.name, default))
-        val result = f
-        typeMapping -= t.name
-        result
-      }
-      case None => f
-    }
-
-  }
 }
 
 sealed trait TopLevelStatement {
@@ -220,9 +211,18 @@ class Class(
       // - Statics are filtered into companion object
       val fnMems = functions.map(f => Function(f).transform).toBuffer
       val vals = values.map(_.transform).toBuffer
+
       // - merge implements and extends clauses
-      val exts = extensions.zip(implements).map { case (a, b) => a ++ Seq(b) }
-      val typeArgs = makeGenerics(typeParameters)
+      val exts = {
+        (extensions, implements) match {
+          case (Some(e), Some(i)) => Some(e :+ i)
+          case (Some(e), _)       => Some(e)
+          case (_, Some(i))       => Some(Seq(i))
+          case _                  => None
+        }
+      }
+
+      val typeArgs = makeGenerics(Some(name), typeParameters)
       new NativeClass(name, typeArgs, constructors, vals ++ fnMems, exts)
     }
   }
@@ -247,14 +247,8 @@ case class Interface(
 ) extends TopLevelStatement {
   def transform(implicit ctx: TransformContext) = {
     ctx.withCurrentModule(name) {
-      val typeArgs = makeGenerics(parameters)
+      val typeArgs = makeGenerics(Some(name), parameters)
       val transformMems = members.map(_.transform)
-      // i match {
-      // case v: ValueMember => v.transform
-      // case f: FnMember    => Function(f).transform
-
-      // }
-      // }
       new NativeTrait(name, typeArgs, extensions, transformMems)
     }
   }
@@ -276,7 +270,7 @@ case class Function(
 ) extends TopLevelStatement {
   def transform(implicit ctx: TransformContext) = {
     val FnMember(name, t, args, ret, getSet, static) = value
-    val typeArgs = makeGenerics(t)
+    val typeArgs = makeGenerics(None, t) // Don't globally declare these generics
 
     val returnType = ret.getOrElse(Base("Unit"))
 

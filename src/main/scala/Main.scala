@@ -31,10 +31,7 @@ case class Preprocessor(file: String, oldText: String, newText: String) {
 // To elevate this to the quality where it's worth distributing, we should additionally:
 // - Address export handling correctly instead of assuming everything to be visible
 // - Parse doc comments so that they end up alongside their corresponding members.
-
-object Main extends App {
-
-  type FileResult = (Seq[String], Seq[TopLevelStatement])
+object Preprocessors {
 
   val preprocessors = Seq(
     // Not currently supporting conditional types, and there is only seemingly one instance in the definitions.
@@ -72,8 +69,44 @@ object Main extends App {
       file = "data/examples/jsm/csm/Frustum.d.ts",
       oldText = "export default class",
       newText = "export class"
+    ),
+
+    // This is an overload that fails due to type erasure, and isn't even useful
+    // since we have no real representation of js tuple types, since JS tuples are arrays.
+    matrixToArray("Vector2"),
+    matrixToArray("Vector3"),
+    matrixToArray("Vector4"),
+    matrixToArray("Matrix3"),
+    matrixToArray("Matrix4"),
+    Preprocessor(
+      file = "WebXR.d.ts",
+      oldText = """export interface XRReferenceSpace extends EventTarget {
+      |    getOffsetReferenceSpace(originOffset: XRRigidTransform): XRReferenceSpace;
+      |}
+      |export interface XRHitTestOptionsInit {
+      |    space: EventTarget;
+      |    offsetRay?: XRRay | undefined;
+      |}
+      |
+      |export interface XRTransientInputHitTestOptionsInit {
+      |    profile: string;
+      |    offsetRay?: XRRay | undefined;
+      |}""".stripMargin,
+      newText = ""
     )
   )
+
+  def matrixToArray(typeName: String) =
+    Preprocessor(
+      file = s"src/math/$typeName.d.ts",
+      oldText = s"toArray(array?: ${typeName}Tuple, offset?: 0): ${typeName}Tuple;",
+      newText = ""
+    )
+}
+
+object Main extends App {
+  type FileResult = (Seq[String], Seq[TopLevelStatement])
+  val preprocessors = Preprocessors.preprocessors
 
   def getFileText(file: File): String = {
     val src = Source.fromFile(file)
@@ -134,42 +167,36 @@ object Main extends App {
   // parseDirectory(Seq("examples"), new File("data/examples"))
   // parseDirectory(Seq(), new File("data/src"))
 
-  def transform(results: Seq[FileResult]): Seq[SJSTopLevel] = {
+  def transform(results: Seq[FileResult]): (Module, TransformContext) = {
     implicit val transformContext = new TransformContext("")
 
-    val rootModule = new NativeObject("GLOBAL", "")
+    val rootModule = new Module("three")
 
-    def getOrCreateModule(path: Seq[String], root: NativeObject = rootModule): NativeObject = {
-      def newModule(name: String) = new NativeObject(name, s"THREE", Buffer(), true)
-      path.foldLeft(rootModule) { case (mod, name) =>
-        mod.subObjects.get(name) match {
-          case Some(value) => value
-          case None => {
-            val result = newModule(name)
-            mod.addMembers(Seq(result))
-            result
-          }
-        }
+    def getOrCreateModule(path: Seq[String], root: Module = rootModule): Module = {
+      def newModule(name: String) = new Module(name)
+      path.foldLeft(root) { case (mod, name) =>
+        mod.subModules.getOrElseUpdate(name, newModule(name))
       }
     }
 
     for (result <- results) {
       val (path, tree) = result
       val module = getOrCreateModule(path)
-      module.addMembers(tree.map(_.transform))
-      module.addMembers(transformContext.resetCompanions())
+      module.members ++= tree.map(_.transform)
+      module.members ++= transformContext.resetCompanions()
     }
 
-    rootModule.getMembers
+    (rootModule, transformContext)
   }
 
   val headers = Lines(
-    "package typings.three",
-    "",
+    "\n",
     "import scala.scalajs.js",
     "import js.annotation.*",
     "import org.scalajs.dom.*",
-    "import org.scalajs.dom.raw.{HTMLMediaElement}",
+    "import org.scalajs.dom.raw.{HTMLMediaElement, HTMLVideoElement, HTMLCanvasElement, HTMLImageElement}",
+    "import org.scalajs.dom.raw.{WebGLShader, WebGLFramebuffer}",
+    "import org.scalajs.dom.experimental.gamepad.*",
     "import scalajs.js.typedarray.*",
     ""
   ).emit()
@@ -177,60 +204,57 @@ object Main extends App {
   // Usually imports from TS Stdlib
   val globalDefintions = Lines(
     "type ArrayLike[T] = js.native",
+    "type Record[K,V] = js.native",
     "type WebGLBuffer = js.native",
-    "type MediaStream = js.native"
-  )
+    "type MediaStream = js.native",
+    "type ImageBitmap = js.native",
+    "type BufferSource = js.native",
+    "type MimeType = js.native",
+    "type WebGL2RenderingContext = js.native",
+    "type DOMPointReadOnly = js.native",
+    "type DOMHighResTimeStamp = js.native",
+    "\n"
+  ).emit()
 
-  def emit(outDir: String, stmts: Seq[SJSTopLevel]) = {
-
-    def allModuleNames(stmt: SJSTopLevel, prefix: Option[String] = None): Seq[String] = {
-      stmt match {
-        case a: NativeObject if a.isModule => {
-          val nextPrefix = prefix.map(p => s"$p.${a.name}").getOrElse(a.name)
-          Seq(nextPrefix) ++ a.subObjects.values.flatMap(so => allModuleNames(so, Some(nextPrefix)))
-        }
-        case _ => Seq()
-      }
-    }
-
-    def getModuleName(stmt: SJSTopLevel): Option[String] = {
-      stmt match {
-        case a: NativeObject if a.isModule => Some(a.name)
-        case _                             => None
-      }
-    }
-
-    val allModules = stmts.flatMap(s => allModuleNames(s))
-    val moduleNames = stmts.flatMap(getModuleName)
-    val fileNames = Seq("three") ++ moduleNames
-    val files: Map[String, Buffer[Lines]] = Map.from(fileNames.map(name => (name, Buffer[Lines]())))
+  // What's the right architecture for this?
+  // Every module file should have:
+  // - its own sub-package
+  // - all of its definitions prefixed with @JS.Global("THREE.$name")
+  def emit(outDir: String, inputs: (Module, TransformContext)) = {
+    val (root, transformContext) = inputs
+    val allModules = root.flattenModules()
+    val moduleNames = allModules.map(_.name)
 
     def imports(currentModule: String) =
       new Lines(
-        allModules
+        moduleNames
           .filter(_ != currentModule)
           .map(mod => s"import typings.three.$mod.*")
       ).pad()
 
+    def globals(currentModule: String) =
+      if (currentModule == "three") globalDefintions else ""
+
     implicit val ctx = new Emitter.TypeContext()
+    ctx.defaultTypeArgs = transformContext.typeMapping
 
-    for (obj <- stmts) {
-      val fileName = getModuleName(obj).getOrElse("three")
-      files(fileName) += obj.emit
-      files(fileName) += new Lines(Seq(), ctx.resetTypes().map(_.emit).toBuffer)
-    }
+    for (module <- allModules) {
+      val packageName = s"package typings.three.${module.name}"
+      val fileName = module.name.replace('.', '/')
 
-    for ((name, objs) <- files) {
+      val currentImports = imports(module.name).emit()
+      val currentGlobals = globals(module.name)
 
-      val fileText = if (name != "three") {
-        val currentImports = imports(name)
-        headers + objs.map(_.prependChildren(currentImports).emit()).mkString("\n")
-      } else {
-        val currentImports = imports(name).emit()
-        val globalDefs = globalDefintions.emit()
-        headers + globalDefs + currentImports + objs.map(_.emit()).mkString("\n")
-      }
-      writeFileText(s"$outDir/$name.scala", fileText)
+      val firstMembers = module.members
+        .map(member => { member.jsName = s"THREE.${member.name}"; member })
+        .map(_.emit.emit())
+      val interfaceTypes = ctx.resetTypes().map(_.emit.emit())
+      val members = firstMembers ++ interfaceTypes
+
+      val fileText =
+        packageName + headers + currentImports + currentGlobals + members.mkString("\n")
+
+      writeFileText(s"$outDir/$fileName.scala", fileText)
     }
   }
 
@@ -242,12 +266,8 @@ object Main extends App {
 }
 
 //  EXPORTING TODOs:
-//  - Add Missing type definitions
-//  - Sanitize method names
-//  - Apply default type arguments
-//  - Double-definitions with js.UndefOr[Double] and js.UndefOr[Double] on `toArray()`
-
-//  - Filter "three" from imports
-//  - Remove imports that have the current object as a parent.
-//  - Why are we duplicating imports? For the extra objectTypeN defns?
+//  - lifting generic arrowTypes to nearest scope (probably not going to do this)
+//  - importing scalajs.dom.* brings in a name conflict
+//  - duplicate definitions in WebXR
 //  - Namespaces conflict with companion objects -> check if the companion exists before creating it
+//    (or just merge it)

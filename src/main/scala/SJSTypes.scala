@@ -12,8 +12,7 @@ class Lines(var leaf: Seq[String], children: Buffer[Lines] = Buffer()) {
     val s1 = leaf.map(tabs + _).mkString("\n")
     val sep = if (children.length > 0) "\n" else ""
     val s2 = children.map(_.emit(indent + 1)).mkString("\n")
-    // val trailing = if (children.length > 0 && indent == 0) "\n" else ""
-    s1 + sep + s2 // + trailing
+    s1 + sep + s2
   }
 
   def pad(): Lines = {
@@ -36,6 +35,8 @@ object Emitter {
 
   class TypeContext {
     case class TypeKey(args: Seq[Argument], keys: Seq[Key])
+
+    var defaultTypeArgs = Map[String, Seq[DataType]]()
 
     var genIndex = 0
     val types = Map[TypeKey, String]()
@@ -70,14 +71,23 @@ object Emitter {
 
   def matchBaseName(name: String): String = {
     name match {
-      case "void"    => "Unit"
-      case "null"    => "Null"
-      case "this"    => "this.type"
-      case "any"     => "js.Any"
-      case "object"  => "js.Object"
-      case "number"  => "Double"
-      case "string"  => "String"
+      case "void" => "Unit"
+
+      case "true"    => "Boolean"
+      case "false"   => "Boolean"
       case "boolean" => "Boolean"
+
+      case "null"   => "Null"
+      case "this"   => "this.type"
+      case "any"    => "js.Any"
+      case "object" => "js.Object"
+
+      case "number" => "Double"
+      case "string" => "String"
+
+      case "Promise" => "js.Promise"
+      case "RegExp"  => "js.RegExp"
+      case "Map"     => "js.Map"
       case _         => name
     }
   }
@@ -86,7 +96,12 @@ object Emitter {
 
   def emitType(t: DataType)(implicit context: TypeContext): String =
     t match {
-      case Base(name)        => matchBaseName(name)
+      case Base(name) => {
+        context.defaultTypeArgs.get(name) match {
+          case None        => matchBaseName(name)
+          case Some(value) => emitType(Parameterized(name, value))
+        }
+      }
       case StringType(value) => value.replace('\'', '"')
       case ArrayType(member) => s"js.Array[${emitType(member)}]"
       case UnionType(members) => {
@@ -95,8 +110,9 @@ object Emitter {
           case other              => emitType(other)
         }
       }
-      case Parameterized(name, parameters) => s"$name[${parameters.map(emitType).mkString(",")}]"
-      case ObjectType(members, keys)       => context.typeName(members, keys)
+      case Parameterized(name, parameters) =>
+        s"${matchBaseName(name)}[${parameters.map(emitType).mkString(",")}]"
+      case ObjectType(members, keys) => context.typeName(members, keys)
       case ArrowType(typeParameters, parameters, ret) => {
         val lng = parameters.args.length
         val typs = parameters.args.map(a => a.dataType) :+ ret
@@ -118,11 +134,14 @@ import Emitter._
 
 sealed trait SJSTopLevel {
   def emit(implicit ctx: TypeContext): Lines
-  def isModule = false
+  var name: String
+  var jsName: String
 }
 
 object SJSTopLevel {
   def empty: SJSTopLevel = new SJSTopLevel {
+    var name = ""
+    var jsName = ""
     def emit(implicit ctx: TypeContext): Lines = new Lines(Seq(), Buffer())
   }
 }
@@ -141,8 +160,25 @@ object Helpers {
 
   def sanitize(name: String) = {
     name match {
-      case "val" | "type" | "object" => s"`$name`"
-      case _                         => name
+      case "val" | "type" | "object" | "new" => s"`$name`"
+      case _                                 => name
+    }
+  }
+
+  // Sanitize concrete string, number, and boolean types for use in js.native vars
+  def sanitizeType(t: DataType) = {
+    t match {
+      case Base(name) => {
+        name.toIntOption
+          .map(_ => Base("number"))
+          .getOrElse(name match {
+            case "true"  => Base("boolean")
+            case "false" => Base("boolean")
+            case _       => Base(name)
+          })
+      }
+      case StringType(value) => Base("string")
+      case _                 => t
     }
   }
 
@@ -176,24 +212,31 @@ import Helpers._
 trait TraitDeclaration extends SJSTopLevel
 
 class NativeTrait(
-    name: String,
+    var name: String,
     typeArgs: Option[Seq[Generic]],
     extensions: Option[Seq[DataType]],
     members: Seq[SJSTopLevel]
 ) extends TraitDeclaration {
+  var jsName: String = ""
   def emit(implicit ctx: TypeContext): Lines = {
     val typeParameters = formatTypeArgs(typeArgs)
     val extendsClause = formatExtensions(extensions)
     val colon = if (members.size > 0) ":" else ""
     new Lines(
-      Seq("", "@js.native", s"sealed trait $name$typeParameters $extendsClause$colon"),
+      Seq(
+        "",
+        "@js.native",
+        // s"@JSGlobal(\"$jsName\")",
+        s"sealed trait $name$typeParameters $extendsClause$colon"
+      ),
       members.map(_.emit).toBuffer
     )
   }
 }
 
-class ScalaTrait(name: String, extensions: Option[Seq[DataType]], members: Seq[SJSTopLevel])
+class ScalaTrait(var name: String, extensions: Option[Seq[DataType]], members: Seq[SJSTopLevel])
     extends TraitDeclaration {
+  var jsName: String = ""
   def emit(implicit ctx: TypeContext): Lines = {
     val extendsClause = formatExtensions(extensions)
     new Lines(Seq(s"trait $name $extendsClause:"), members.map(_.emit).toBuffer)
@@ -201,12 +244,13 @@ class ScalaTrait(name: String, extensions: Option[Seq[DataType]], members: Seq[S
 }
 
 class NativeClass(
-    name: String,
+    var name: String,
     typeArgs: Option[Seq[Generic]],
     constructors: Seq[Constructor],
     members: Buffer[SJSTopLevel],
     extensions: Option[Seq[DataType]]
 ) extends SJSTopLevel {
+  var jsName: String = ""
   def emit(implicit ctx: TypeContext): Lines = {
     val typPars = formatTypeArgs(typeArgs)
 
@@ -218,24 +262,32 @@ class NativeClass(
     val colon = if (members.size + ctors.size > 0) ":" else ""
 
     new Lines(
-      Seq("", "@js.native", s"class $name$typPars ${formatExtensions(extensions)}$colon"),
+      Seq(
+        "",
+        "@js.native",
+        s"@JSGlobal(\"$jsName\")",
+        s"class $name$typPars ${formatExtensions(extensions)}$colon"
+      ),
       ctors ++ members.map(_.emit)
     )
   }
 }
-class TypeAlias(name: String, dataType: DataType) extends SJSTopLevel {
+class TypeAlias(var name: String, dataType: DataType) extends SJSTopLevel {
+  var jsName: String = ""
   def emit(implicit ctx: TypeContext): Lines = {
     Lines("", s"type $name = ${emitType(dataType)}")
   }
 }
-class NativeConstant(name: String, dataType: DataType) extends SJSTopLevel {
+class NativeConstant(var name: String, dataType: DataType) extends SJSTopLevel {
+  var jsName: String = ""
   def emit(implicit ctx: TypeContext): Lines = {
-    Lines(s"val ${sanitize(name)}: ${emitType(dataType)} = js.native;")
+    Lines(s"val ${sanitize(name)}: ${emitType(sanitizeType(dataType))} = js.native;")
   }
 }
-class NativeValue(name: String, dataType: DataType) extends SJSTopLevel {
+class NativeValue(var name: String, dataType: DataType) extends SJSTopLevel {
+  var jsName: String = ""
   def emit(implicit ctx: TypeContext): Lines = {
-    Lines(s"var ${sanitize(name)}: ${emitType(dataType)} = js.native;")
+    Lines(s"var ${sanitize(name)}: ${emitType(sanitizeType(dataType))} = js.native;")
   }
 }
 
@@ -246,49 +298,28 @@ case class Generic(typ: String, superType: Option[DataType]) {
 }
 
 class NativeFunction(
-    name: String,
+    var name: String,
     typeArgs: Option[Seq[Generic]],
     args: Option[ArgList],
     ret: DataType,
     bracket: Boolean = false
 ) extends SJSTopLevel {
+  var jsName: String = ""
   def emit(implicit ctx: TypeContext): Lines = {
+    val cleanName = sanitize(name)
     val typPars = formatTypeArgs(typeArgs)
     val apars = args.map(formatArgList).getOrElse("")
     val annots = if (bracket) Seq("@JSBracketAccess") else Seq()
-    val defn = s"def $name$typPars$apars: ${emitType(ret)} = js.native"
+    val defn = s"def $cleanName$typPars$apars: ${emitType(ret)} = js.native"
     new Lines(annots ++ Seq(defn))
   }
 }
 
 class NativeObject(
-    val name: String,
-    jsName: String,
-    members: Buffer[SJSTopLevel] = Buffer(),
-    var module: Boolean = false
+    var name: String,
+    var jsName: String,
+    members: Buffer[SJSTopLevel] = Buffer()
 ) extends SJSTopLevel {
-
-  val imports = Buffer[String]()
-
-  override def isModule = module
-
-  val subObjects = Map.from(members.flatMap {
-    case a: NativeObject => Some((a.name, a))
-    case _               => None
-  })
-
-  def addMembers(mems: Seq[SJSTopLevel]): Unit = {
-    members ++= mems
-    for (mem <- mems) {
-      mem match {
-        case a: NativeObject => subObjects += ((a.name, a))
-        case _               => ()
-      }
-    }
-  }
-
-  def getMembers = members.toSeq
-
   def emit(implicit ctx: TypeContext): Lines = {
     val colon = if (members.size > 0) ":" else ""
     new Lines(
@@ -298,26 +329,30 @@ class NativeObject(
   }
 }
 
-class CompanionObject(val name: String, val members: Buffer[SJSTopLevel] = Buffer())
+class CompanionObject(var name: String, val members: Buffer[SJSTopLevel] = Buffer())
     extends SJSTopLevel {
+  var jsName: String = ""
   def emit(implicit ctx: TypeContext): Lines =
     new Lines(Seq("", s"object $name:"), members.map(_.emit))
 }
 
-// Special case the very common scala-js-defined parameter traits
-class ParameterClass(name: String, extensions: Seq[DataType], variables: Seq[(String, DataType)]) {
-  def emit(implicit context: TypeContext): Lines = {
-    val exts = extensions match {
-      case Seq()       => "js.Object"
-      case Seq(single) => s"$single"
-      case _           => extensions.map(emitType).mkString(" with ")
-    }
-    val header = s"trait $name extends $exts:"
-    val members = variables.map { case (name, typ) =>
-      Lines(s"var $name: ${emitType(typ)} = js.undefined")
-    }.toBuffer
-    new Lines(Seq(header), members)
+class Module(val name: String, val members: Buffer[SJSTopLevel] = Buffer()) {
+  val subModules = Map[String, Module]()
+
+  def moduleNames(root: Option[String] = None): Seq[String] =
+    subModules.flatMap {
+      case (name, sub) => {
+        val nextPrefix = root.map(r => s"$r.$name").getOrElse(name)
+        Seq(nextPrefix) ++ sub.moduleNames(Some(nextPrefix))
+      }
+    }.toSeq
+
+  def flattenModules(root: Option[String] = None): Seq[Module] = {
+    val currentName = root.map(r => s"$r.$name").getOrElse(name)
+    val currentMod = new Module(currentName, members)
+    Seq(currentMod) ++ subModules.values.flatMap(sub => sub.flattenModules(Some(currentName)))
   }
+
 }
 
 // Transformations we need to make everything work:
