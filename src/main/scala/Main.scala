@@ -9,104 +9,8 @@ import fastparse.Parsed.Success
 import scala.collection.mutable.Buffer
 import scala.collection.mutable.Map
 
-// Use this when there's some typescript construct we don't know how to support in scala,
-// so instead we string match.
-// Currently we also make use of it when there's an edge case that appears literally once
-// in the target library that we don't want to modify our code to support.
-case class Preprocessor(file: String, oldText: String, newText: String) {
-  def matches(targetFilePath: String) = targetFilePath.contains(file)
-  def replace(targetText: String) = targetText.replace(oldText, newText)
-  def apply(targetFilePath: String, targetText: String) =
-    if (matches(targetFilePath)) replace(targetText) else targetText
-}
-
-// FEATURES TO REMOVE THE HACKS:
-//  - match types
-//  - JSCallable annotation
-//  - interface indexing
-//  - readonly parsing hack (don't parse it as `readonly` token if there's a colon after it)
-//  - tuple types
-//  - default parsing hack (`export default` to be followed by toplevel stmt.)
-
-// To elevate this to the quality where it's worth distributing, we should additionally:
-// - Address export handling correctly instead of assuming everything to be visible
-// - Parse doc comments so that they end up alongside their corresponding members.
-object Preprocessors {
-
-  val preprocessors = Seq(
-    // Not currently supporting conditional types, and there is only seemingly one instance in the definitions.
-    Preprocessor(
-      file = "src/renderers/webgl/WebGLCubeUVMaps.d.ts",
-      oldText = "get<T>(texture: T): T extends Texture ? Texture : T;",
-      newText = "get<T extends Texture>(texture: T): T;"
-    ),
-    // This completely breaks the parser, and we cannot allow empty idents.
-    Preprocessor(
-      file = "data/examples/jsm/libs/fflate.module.min.d.ts",
-      oldText = "    (): void;",
-      newText = ""
-    ),
-    // Instead of implementing our own type indexing system, just replace with this.
-    Preprocessor(
-      file = "data/examples/jsm/libs/fflate.module.min.d.ts",
-      oldText = "GzipOptions['mtime'] | undefined",
-      newText = "Date | string | number | undefined"
-    ),
-    // Typescript allows their keywords to be identifiers, for JS compat.
-    Preprocessor(
-      file = "data/examples/jsm/nodes/core/InputNode.d.ts",
-      oldText = "readonly: boolean;",
-      newText = "readonly readonly: boolean;"
-    ),
-    // It's either empty or a Uint8Array. However, we have no equivalent type in Scala.
-    Preprocessor(
-      file = "data/examples/jsm/exporters/MMDExporter.d.ts",
-      oldText = "[] | Uint8Array",
-      newText = "Uint8Array"
-    ),
-    // There is only a single instance of this in the entire definitions.
-    Preprocessor(
-      file = "data/examples/jsm/csm/Frustum.d.ts",
-      oldText = "export default class",
-      newText = "export class"
-    ),
-
-    // This is an overload that fails due to type erasure, and isn't even useful
-    // since we have no real representation of js tuple types, since JS tuples are arrays.
-    matrixToArray("Vector2"),
-    matrixToArray("Vector3"),
-    matrixToArray("Vector4"),
-    matrixToArray("Matrix3"),
-    matrixToArray("Matrix4"),
-    Preprocessor(
-      file = "WebXR.d.ts",
-      oldText = """export interface XRReferenceSpace extends EventTarget {
-      |    getOffsetReferenceSpace(originOffset: XRRigidTransform): XRReferenceSpace;
-      |}
-      |export interface XRHitTestOptionsInit {
-      |    space: EventTarget;
-      |    offsetRay?: XRRay | undefined;
-      |}
-      |
-      |export interface XRTransientInputHitTestOptionsInit {
-      |    profile: string;
-      |    offsetRay?: XRRay | undefined;
-      |}""".stripMargin,
-      newText = ""
-    )
-  )
-
-  def matrixToArray(typeName: String) =
-    Preprocessor(
-      file = s"src/math/$typeName.d.ts",
-      oldText = s"toArray(array?: ${typeName}Tuple, offset?: 0): ${typeName}Tuple;",
-      newText = ""
-    )
-}
-
 object Main extends App {
   type FileResult = (Seq[String], Seq[TopLevelStatement])
-  val preprocessors = Preprocessors.preprocessors
 
   def getFileText(file: File): String = {
     val src = Source.fromFile(file)
@@ -114,18 +18,19 @@ object Main extends App {
     val string =
       try src.mkString
       finally src.close()
-    preprocessors.foldLeft(string)((current, processor) => processor(filePath, current))
+    Preprocessors(filePath, string)
   }
 
   def writeFileText(name: String, text: String): Unit = {
     println(s"Writing ${name}")
 
+    val processedText = Postprocessors(name, text)
     val f = new File(name)
     f.getParentFile().mkdirs()
     f.createNewFile()
     val writer = new java.io.PrintWriter(f)
     try {
-      writer.println(text)
+      writer.println(processedText)
     } finally {
       writer.close()
     }

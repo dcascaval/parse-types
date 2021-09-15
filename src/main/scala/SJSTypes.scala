@@ -260,12 +260,10 @@ class NativeClass(
       .toBuffer
 
     val colon = if (members.size + ctors.size > 0) ":" else ""
+    val jsGlobal = if (jsName.length() > 0) Seq(s"@JSGlobal(\"$jsName\")") else Seq()
 
     new Lines(
-      Seq(
-        "",
-        "@js.native",
-        s"@JSGlobal(\"$jsName\")",
+      Seq("", "@js.native") ++ jsGlobal ++ Seq(
         s"class $name$typPars ${formatExtensions(extensions)}$colon"
       ),
       ctors ++ members.map(_.emit)
