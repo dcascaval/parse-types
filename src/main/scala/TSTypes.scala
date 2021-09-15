@@ -32,7 +32,7 @@ case object Setter extends GetSetState
 sealed trait Member
 
 sealed trait InterfaceMember extends Member {
-  def transform(implicit ctx: TransformContext): SJSTopLevel
+  def transform(withImpl: Boolean = true)(implicit ctx: TransformContext): SJSTopLevel
 }
 
 import Helpers._
@@ -45,12 +45,10 @@ case class ValueMember(
     readOnly: Boolean,
     static: Boolean
 ) extends InterfaceMember {
-  def transform(implicit ctx: TransformContext) = {
+  def transform(withImpl: Boolean = true)(implicit ctx: TransformContext) = {
     val t = reifyOptional(dataType, optional)
 
-    val result =
-      if (readOnly) new NativeValue(name, t)
-      else new NativeConstant(name, t)
+    val result = new NativeValue(name, t, mutable = !readOnly, withImpl = withImpl)
 
     if (static) {
       ctx.mergeToCompanion(ctx.currentModule, result)
@@ -60,7 +58,7 @@ case class ValueMember(
 }
 
 case class KeyMember(key: Key) extends InterfaceMember {
-  def transform(implicit ctx: TransformContext): SJSTopLevel = {
+  def transform(withImpl: Boolean = true)(implicit ctx: TransformContext): SJSTopLevel = {
     val Key(name, t, ret) = key
     new NativeFunction(
       "apply",
@@ -81,7 +79,9 @@ case class FnMember(
     getSet: Option[GetSetState],
     static: Boolean // Mutually exclusive with get/set
 ) extends InterfaceMember {
-  def transform(implicit ctx: TransformContext): SJSTopLevel = Function(this).transform
+  def transform(withImpl: Boolean = true)(implicit ctx: TransformContext): SJSTopLevel = Function(
+    this
+  ).transform
 }
 
 case class Constructor(
@@ -146,7 +146,7 @@ case class Constant(
     dataType: DataType
 ) extends TopLevelStatement {
   def transform(implicit ctx: TransformContext) =
-    new NativeConstant(name, dataType)
+    new NativeValue(name, dataType, mutable = false)
 }
 
 sealed trait EnumMember
@@ -172,8 +172,6 @@ case class TopLevelEnum(
 
     if (allStrings.length == options.length && allStrings.length > 0) {
       new TypeAlias(name, UnionType(allStrings))
-    } else if (options.length == 0) {
-      new NativeTrait(name, None, None, Seq())
     } else {
       val members = options
         .flatMap[String](mem =>
@@ -183,10 +181,10 @@ case class TopLevelEnum(
             case ValueMem(name, _) => Some(name)
           }
         )
-        .map[SJSTopLevel](memName => new NativeConstant(memName, Base(name)))
+        .map[SJSTopLevel](memName => new NativeValue(memName, Base(name), mutable = false))
         .map(mem => ctx.mergeToCompanion(name, mem))
 
-      new NativeTrait(name, None, None, Seq())
+      new NativeTrait(name, None, None, Buffer())
       // new NativeObject(name, s"THREE.$name", members)
     }
   }
@@ -210,7 +208,7 @@ class Class(
     ctx.withCurrentModule(name) {
       // - Statics are filtered into companion object
       val fnMems = functions.map(f => Function(f).transform).toBuffer
-      val vals = values.map(_.transform).toBuffer
+      val vals = values.map(_.transform()).toBuffer
 
       // - merge implements and extends clauses
       val exts = {
@@ -248,7 +246,7 @@ case class Interface(
   def transform(implicit ctx: TransformContext) = {
     ctx.withCurrentModule(name) {
       val typeArgs = makeGenerics(Some(name), parameters)
-      val transformMems = members.map(_.transform)
+      val transformMems = members.map(_.transform(withImpl = true)).toBuffer
       new NativeTrait(name, typeArgs, extensions, transformMems)
     }
   }

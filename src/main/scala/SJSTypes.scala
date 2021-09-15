@@ -3,6 +3,7 @@ package tsparse
 import scala.collection.mutable.Buffer
 import scala.collection.mutable.Map
 import scala.collection.mutable.Set
+import javax.xml.crypto.Data
 
 class Lines(var leaf: Seq[String], children: Buffer[Lines] = Buffer()) {
   // Todo: might be more efficient to write this into a stringBuilder
@@ -61,7 +62,7 @@ object Emitter {
         val mems: Seq[InterfaceMember] =
           members.map(arg => ValueMember(arg.name, arg.dataType, arg.optional, false, false)) ++
             keys.map(key => KeyMember(key))
-        new NativeTrait(name, None, None, mems.map(_.transform))
+        new NativeTrait(name, None, None, mems.map(_.transform(withImpl = true)).toBuffer)
       }
       types.clear()
       result
@@ -214,9 +215,10 @@ trait TraitDeclaration extends SJSTopLevel
 class NativeTrait(
     var name: String,
     typeArgs: Option[Seq[Generic]],
-    extensions: Option[Seq[DataType]],
-    members: Seq[SJSTopLevel]
-) extends TraitDeclaration {
+    val extensions: Option[Seq[DataType]],
+    val members: Buffer[SJSTopLevel]
+) extends TraitDeclaration
+    with Composite {
   var jsName: String = ""
   def emit(implicit ctx: TypeContext): Lines = {
     val typeParameters = formatTypeArgs(typeArgs)
@@ -226,7 +228,6 @@ class NativeTrait(
       Seq(
         "",
         "@js.native",
-        // s"@JSGlobal(\"$jsName\")",
         s"sealed trait $name$typeParameters $extendsClause$colon"
       ),
       members.map(_.emit).toBuffer
@@ -243,13 +244,18 @@ class ScalaTrait(var name: String, extensions: Option[Seq[DataType]], members: S
   }
 }
 
+sealed trait Composite extends SJSTopLevel {
+  val extensions: Option[Seq[DataType]]
+  val members: Buffer[SJSTopLevel]
+}
+
 class NativeClass(
     var name: String,
     typeArgs: Option[Seq[Generic]],
     constructors: Seq[Constructor],
-    members: Buffer[SJSTopLevel],
-    extensions: Option[Seq[DataType]]
-) extends SJSTopLevel {
+    val members: Buffer[SJSTopLevel],
+    val extensions: Option[Seq[DataType]]
+) extends Composite {
   var jsName: String = ""
   def emit(implicit ctx: TypeContext): Lines = {
     val typPars = formatTypeArgs(typeArgs)
@@ -276,16 +282,28 @@ class TypeAlias(var name: String, dataType: DataType) extends SJSTopLevel {
     Lines("", s"type $name = ${emitType(dataType)}")
   }
 }
-class NativeConstant(var name: String, dataType: DataType) extends SJSTopLevel {
-  var jsName: String = ""
-  def emit(implicit ctx: TypeContext): Lines = {
-    Lines(s"val ${sanitize(name)}: ${emitType(sanitizeType(dataType))} = js.native;")
-  }
+
+sealed trait Overridable extends SJSTopLevel {
+  def types: Seq[DataType]
+  var overrides: Boolean
 }
-class NativeValue(var name: String, dataType: DataType) extends SJSTopLevel {
+
+class NativeValue(
+    var name: String,
+    dataType: DataType,
+    mutable: Boolean,
+    var overrides: Boolean = false,
+    withImpl: Boolean = true
+) extends Overridable {
   var jsName: String = ""
+
+  def types = Seq(dataType)
+
   def emit(implicit ctx: TypeContext): Lines = {
-    Lines(s"var ${sanitize(name)}: ${emitType(sanitizeType(dataType))} = js.native;")
+    if (overrides) return Lines()
+    val prefix = if (mutable) "var" else "val"
+    val impl = if (withImpl) " = js.native;" else ""
+    Lines(s"$prefix ${sanitize(name)}: ${emitType(sanitizeType(dataType))}$impl")
   }
 }
 
@@ -300,14 +318,34 @@ class NativeFunction(
     typeArgs: Option[Seq[Generic]],
     args: Option[ArgList],
     ret: DataType,
+    var overrides: Boolean = false,
     bracket: Boolean = false
-) extends SJSTopLevel {
+) extends Overridable {
+
+  def types: Seq[DataType] =
+    args.map(_.args.map(_.dataType)).getOrElse(Seq())
+
   var jsName: String = ""
+
+  def sanitize_method(identifier: String) = {
+    val san = sanitize(identifier)
+    val (newJS, newName) = san match {
+      case "clone" => ("clone", "jsClone")
+      case _       => ("", san)
+    }
+    jsName = newJS
+    newName
+  }
+
   def emit(implicit ctx: TypeContext): Lines = {
-    val cleanName = sanitize(name)
+    if (overrides) return Lines()
+
+    val cleanName = sanitize_method(name)
     val typPars = formatTypeArgs(typeArgs)
     val apars = args.map(formatArgList).getOrElse("")
-    val annots = if (bracket) Seq("@JSBracketAccess") else Seq()
+    val annots = (if (bracket) Seq("@JSBracketAccess") else Seq()) ++
+      (if (jsName.length() > 0) Seq(s"@JSName(\"$jsName\")") else Seq())
+
     val defn = s"def $cleanName$typPars$apars: ${emitType(ret)} = js.native"
     new Lines(annots ++ Seq(defn))
   }

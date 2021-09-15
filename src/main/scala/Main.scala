@@ -22,7 +22,7 @@ object Main extends App {
   }
 
   def writeFileText(name: String, text: String): Unit = {
-    println(s"Writing ${name}")
+    // println(s"Writing ${name}")
 
     val processedText = Postprocessors(name, text)
     val f = new File(name)
@@ -72,6 +72,50 @@ object Main extends App {
   // parseDirectory(Seq("examples"), new File("data/examples"))
   // parseDirectory(Seq(), new File("data/src"))
 
+  def assignOverrides(
+      member: SJSTopLevel,
+      allMembers: Map[String, SJSTopLevel], // Already exists
+      memberCache: Map[String, Set[(String, Seq[DataType])]]
+  ): Unit = {
+    if (memberCache contains member.name) return
+
+    def nameOfType(t: DataType): Option[String] = {
+      t match {
+        case Base(name)             => Option(name)
+        case Parameterized(name, _) => Option(name)
+        case _                      => None
+      }
+    }
+
+    member match {
+      case comp: Composite => {
+        val parentNames = comp.extensions.map(exts => exts.flatMap(nameOfType)).getOrElse(Seq()).toSet
+
+        for (parent <- parentNames)
+          allMembers
+            .get(parent)
+            .map(parentMember => assignOverrides(parentMember, allMembers, memberCache))
+        val parentMembers = parentNames.flatMap(p => memberCache.getOrElse(p, Seq()))
+
+        // if (comp.name == "PointLight") {
+        //   println(comp.name, parentNames)
+        //   println(parentMembers.map(_._1))
+        // }
+
+        val cachedMembers = comp.members.flatMap {
+          case o: Overridable => {
+            val m = (o.name, o.types)
+            if (parentMembers contains m) o.overrides = true
+            Some(m)
+          }
+          case _ => None
+        }
+        memberCache.update(comp.name, parentMembers ++ cachedMembers)
+      }
+      case _ => ()
+    }
+  }
+
   def transform(results: Seq[FileResult]): (Module, TransformContext) = {
     implicit val transformContext = new TransformContext("")
 
@@ -84,11 +128,21 @@ object Main extends App {
       }
     }
 
+    val allMembers = Map[String, SJSTopLevel]()
+
     for (result <- results) {
       val (path, tree) = result
       val module = getOrCreateModule(path)
-      module.members ++= tree.map(_.transform)
+      val transformedMembers = tree.map(_.transform)
+      module.members ++= transformedMembers
       module.members ++= transformContext.resetCompanions()
+
+      allMembers ++= transformedMembers.map(mem => (mem.name, mem))
+    }
+
+    val memberCache = Map[String, Set[(String, Seq[DataType])]]()
+    for (member <- allMembers.values) {
+      assignOverrides(member, allMembers, memberCache)
     }
 
     (rootModule, transformContext)
@@ -171,8 +225,6 @@ object Main extends App {
 }
 
 //  EXPORTING TODOs:
-//  - lifting generic arrowTypes to nearest scope (probably not going to do this)
-//  - importing scalajs.dom.* brings in a name conflict
-//  - duplicate definitions in WebXR
-//  - Namespaces conflict with companion objects -> check if the companion exists before creating it
-//    (or just merge it)
+//  - Apply override modifier
+//  - Lift function values to defs so that they have the argument list included
+//  -
