@@ -257,6 +257,13 @@ class NativeClass(
     val extensions: Option[Seq[DataType]]
 ) extends Composite {
   var jsName: String = ""
+
+  // Count how many non-overriding class members we have
+  def membersSansOverrides = members.count {
+    case o: Overridable => !o.overrides
+    case _              => true
+  }
+
   def emit(implicit ctx: TypeContext): Lines = {
     val typPars = formatTypeArgs(typeArgs)
 
@@ -265,7 +272,7 @@ class NativeClass(
       .map(ps => Lines(s"def this${formatArgList(ps.parameters)} = this()"))
       .toBuffer
 
-    val colon = if (members.size + ctors.size > 0) ":" else ""
+    val colon = if (membersSansOverrides + ctors.size > 0) ":" else ""
     val jsGlobal = if (jsName.length() > 0) Seq(s"@JSGlobal(\"$jsName\")") else Seq()
 
     new Lines(
@@ -292,10 +299,11 @@ class NativeValue(
     var name: String,
     dataType: DataType,
     mutable: Boolean,
+    native: Boolean = false,
     var overrides: Boolean = false,
     withImpl: Boolean = true
 ) extends Overridable {
-  var jsName: String = ""
+  var jsName: String = if (native) name else ""
 
   def types = Seq(dataType)
 
@@ -303,7 +311,11 @@ class NativeValue(
     if (overrides) return Lines()
     val prefix = if (mutable) "var" else "val"
     val impl = if (withImpl) " = js.native;" else ""
-    Lines(s"$prefix ${sanitize(name)}: ${emitType(sanitizeType(dataType))}$impl")
+    var defn = s"$prefix ${sanitize(name)}: ${emitType(sanitizeType(dataType))}$impl"
+
+    val annot = if (native) Seq("@js.native", s"@JSGlobal(\"$jsName\")") else Seq()
+
+    new Lines(annot :+ defn)
   }
 }
 
@@ -318,6 +330,7 @@ class NativeFunction(
     typeArgs: Option[Seq[Generic]],
     args: Option[ArgList],
     ret: DataType,
+    native: Boolean = false,
     var overrides: Boolean = false,
     bracket: Boolean = false
 ) extends Overridable {
@@ -325,13 +338,13 @@ class NativeFunction(
   def types: Seq[DataType] =
     args.map(_.args.map(_.dataType)).getOrElse(Seq())
 
-  var jsName: String = ""
+  var jsName: String = if (native) s"THREE.$name" else ""
 
   def sanitize_method(identifier: String) = {
     val san = sanitize(identifier)
     val (newJS, newName) = san match {
       case "clone" => ("clone", "jsClone")
-      case _       => ("", san)
+      case _       => (jsName, san)
     }
     jsName = newJS
     newName
@@ -343,9 +356,12 @@ class NativeFunction(
     val cleanName = sanitize_method(name)
     val typPars = formatTypeArgs(typeArgs)
     val apars = args.map(formatArgList).getOrElse("")
-    val annots = (if (bracket) Seq("@JSBracketAccess") else Seq()) ++
-      (if (jsName.length() > 0) Seq(s"@JSName(\"$jsName\")") else Seq())
-
+    val annots = if (native) {
+      Seq("@js.native", s"@JSGlobal(\"$jsName\")")
+    } else {
+      (if (bracket) Seq("@JSBracketAccess") else Seq()) ++
+        (if (jsName.length() > 0) Seq(s"@JSName(\"$jsName\")") else Seq())
+    }
     val defn = s"def $cleanName$typPars$apars: ${emitType(ret)} = js.native"
     new Lines(annots ++ Seq(defn))
   }
@@ -354,7 +370,7 @@ class NativeFunction(
 class NativeObject(
     var name: String,
     var jsName: String,
-    members: Buffer[SJSTopLevel] = Buffer()
+    val members: Buffer[SJSTopLevel] = Buffer()
 ) extends SJSTopLevel {
   def emit(implicit ctx: TypeContext): Lines = {
     val colon = if (members.size > 0) ":" else ""
@@ -369,7 +385,8 @@ class CompanionObject(var name: String, val members: Buffer[SJSTopLevel] = Buffe
     extends SJSTopLevel {
   var jsName: String = ""
   def emit(implicit ctx: TypeContext): Lines =
-    new Lines(Seq("", s"object $name:"), members.map(_.emit))
+    new NativeObject(name, jsName, members).emit
+  // new Lines(Seq("", s"object $name:"), members.map(_.emit))
 }
 
 class Module(val name: String, val members: Buffer[SJSTopLevel] = Buffer()) {

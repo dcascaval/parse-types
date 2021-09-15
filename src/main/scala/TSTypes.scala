@@ -114,7 +114,7 @@ class TransformContext(module: String) {
       .members += member
   }
 
-  def resetCompanions(): Seq[SJSTopLevel] = {
+  def resetCompanions(): Seq[CompanionObject] = {
     val result = companions.values.toSeq
     companions.clear()
     result
@@ -143,10 +143,11 @@ sealed trait TopLevelStatement {
 // export const foo: A;
 case class Constant(
     name: String,
-    dataType: DataType
+    dataType: DataType,
+    var native: Boolean = false
 ) extends TopLevelStatement {
   def transform(implicit ctx: TransformContext) =
-    new NativeValue(name, dataType, mutable = false)
+    new NativeValue(name, dataType, native = native, mutable = false)
 }
 
 sealed trait EnumMember
@@ -264,7 +265,8 @@ case class Namespace(
 }
 
 case class Function(
-    value: FnMember
+    value: FnMember,
+    native: Boolean = false
 ) extends TopLevelStatement {
   def transform(implicit ctx: TransformContext) = {
     val FnMember(name, t, args, ret, getSet, static) = value
@@ -276,7 +278,7 @@ case class Function(
       case Some(Getter) => // def $name: ret
         new NativeFunction(name, typeArgs, None, returnType)
       case _ => // def $name<$T>($args) : ret
-        new NativeFunction(name, typeArgs, Some(args), returnType)
+        new NativeFunction(name, typeArgs, Some(args), returnType, native = native)
     }
 
     if (static) {

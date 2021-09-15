@@ -75,6 +75,9 @@ object Preprocessors extends TextProcessor {
     matrixToArray("Vector4"),
     matrixToArray("Matrix3"),
     matrixToArray("Matrix4"),
+
+    // These are duplicate definitions that are strictly less expressive than the definitons
+    // that come later.
     TextReplacement(
       file = "WebXR.d.ts",
       oldText = """export interface XRReferenceSpace extends EventTarget {
@@ -90,6 +93,15 @@ object Preprocessors extends TextProcessor {
       |    offsetRay?: XRRay | undefined;
       |}""".stripMargin,
       newText = ""
+    ),
+
+    // This property shadows the one already existing in js.Map[]
+    TextReplacement(
+      file = "WebXR.d.ts",
+      oldText = """export interface XRHand extends Map<XRHandJoint, XRJointSpace> {
+      |    readonly size: number;
+      |}""".stripMargin,
+      newText = "export interface XRHand extends Map<XRHandJoint, XRJointSpace> {}"
     )
   )
 
@@ -103,11 +115,6 @@ object Preprocessors extends TextProcessor {
 
 object Postprocessors extends TextProcessor {
   val processors = Seq(
-    TextReplacement(
-      file = "animation.scala",
-      oldText = "object PropertyBinding:",
-      newText = "// object PropertyBinding:"
-    ),
     TextReplacement(
       file = "renderers/webxr.scala",
       oldText = "sealed trait XRInputSourceEvent extends Event:",

@@ -75,7 +75,7 @@ object Main extends App {
   def assignOverrides(
       member: SJSTopLevel,
       allMembers: Map[String, SJSTopLevel], // Already exists
-      memberCache: Map[String, Set[(String, Seq[DataType])]]
+      memberCache: Map[String, Set[String]]
   ): Unit = {
     if (memberCache contains member.name) return
 
@@ -97,16 +97,10 @@ object Main extends App {
             .map(parentMember => assignOverrides(parentMember, allMembers, memberCache))
         val parentMembers = parentNames.flatMap(p => memberCache.getOrElse(p, Seq()))
 
-        // if (comp.name == "PointLight") {
-        //   println(comp.name, parentNames)
-        //   println(parentMembers.map(_._1))
-        // }
-
         val cachedMembers = comp.members.flatMap {
           case o: Overridable => {
-            val m = (o.name, o.types)
-            if (parentMembers contains m) o.overrides = true
-            Some(m)
+            if (parentMembers contains o.name) o.overrides = true
+            Some(o.name)
           }
           case _ => None
         }
@@ -114,6 +108,26 @@ object Main extends App {
       }
       case _ => ()
     }
+  }
+
+  def dedupCompanions(
+      members: Seq[SJSTopLevel],
+      companions: Seq[CompanionObject]
+  ): Buffer[SJSTopLevel] = {
+    val result = members.toBuffer
+    for (companion <- companions) {
+      val conflictingMembers = members.filter(_.name == companion.name).flatMap {
+        case obj: NativeObject => Some(obj)
+        case _                 => None
+      }
+      assert(conflictingMembers.length <= 1)
+      if (conflictingMembers.length == 1) {
+        conflictingMembers(0).members ++= companion.members
+      } else {
+        result += companion
+      }
+    }
+    result
   }
 
   def transform(results: Seq[FileResult]): (Module, TransformContext) = {
@@ -133,14 +147,14 @@ object Main extends App {
     for (result <- results) {
       val (path, tree) = result
       val module = getOrCreateModule(path)
-      val transformedMembers = tree.map(_.transform)
-      module.members ++= transformedMembers
-      module.members ++= transformContext.resetCompanions()
 
+      val transformedMembers = tree.map(_.transform)
+      val dedupMembers = dedupCompanions(transformedMembers, transformContext.resetCompanions())
+      module.members ++= dedupMembers
       allMembers ++= transformedMembers.map(mem => (mem.name, mem))
     }
 
-    val memberCache = Map[String, Set[(String, Seq[DataType])]]()
+    val memberCache = Map[String, Set[String]]()
     for (member <- allMembers.values) {
       assignOverrides(member, allMembers, memberCache)
     }

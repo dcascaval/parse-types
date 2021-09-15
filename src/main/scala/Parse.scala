@@ -255,8 +255,8 @@ object Parser {
       Namespace(name, mems.flatMap(identity))
   }
 
-  def topConstant[_: P] = P("export" ~ nestedConstant)
-  def topFunction[_: P] = P(("export" | "declare") ~ nestedFunction)
+  def topConstant[_: P] = P("export" ~ nestedConstant).map(c => Constant(c.name, c.dataType, true))
+  def topFunction[_: P] = P(("export" | "declare") ~ nestedFunction).map(f => Function(f.value, true))
   def topClass[_: P] = P("export" ~ nestedClass)
   def topInterface[_: P] = P("export".? ~ nestedInterface)
   def topNamespace[_: P] = P(("export" | "declare") ~ namespace)
