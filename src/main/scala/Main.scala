@@ -161,7 +161,7 @@ object Main extends App {
     "import scala.scalajs.js",
     "import js.annotation.*",
     "import org.scalajs.dom.*",
-    "import org.scalajs.dom.raw.{HTMLMediaElement, HTMLVideoElement, HTMLCanvasElement, HTMLImageElement}",
+    "import org.scalajs.dom.raw.{HTMLElement, HTMLDocument, HTMLMediaElement, HTMLVideoElement, HTMLCanvasElement, HTMLImageElement}",
     "import org.scalajs.dom.raw.{WebGLShader, WebGLFramebuffer}",
     "import org.scalajs.dom.experimental.gamepad.*",
     "import scalajs.js.typedarray.*",
@@ -183,10 +183,11 @@ object Main extends App {
     "\n"
   ).emit()
 
-  def emit(outDir: String, inputs: (Module, TransformContext)) = {
+  def emit(outDir: String, inputs: (Module, TransformContext), existingModules: Seq[String] = Seq()) = {
     val (root, transformContext) = inputs
     val allModules = root.flattenModules()
-    val moduleNames = allModules.map(_.name)
+    val moduleNames = existingModules ++ allModules.map(_.name)
+    println(allModules.map(_.name))
 
     def imports(currentModule: String) =
       new Lines(
@@ -214,16 +215,38 @@ object Main extends App {
       val interfaceTypes = ctx.resetTypes().map(_.emit.emit())
       val members = firstMembers ++ interfaceTypes
 
-      val fileText =
-        packageName + headers + currentImports + currentGlobals + members.mkString("\n")
+      if (members.length > 0) {
+        val fileText =
+          packageName + headers + currentImports + currentGlobals + members.mkString("\n")
 
-      writeFileText(s"$outDir/$fileName.scala", fileText)
+        writeFileText(s"$outDir/$fileName.scala", fileText)
+      }
     }
+
+    moduleNames
   }
 
-  emit(
+  // Don't write out the files, just get the module names.
+  def virtualEmit(outDir: String, inputs: (Module, TransformContext)) = {
+    val (root, transformContext) = inputs
+    val allModules = root.flattenModules()
+    allModules.map(_.name)
+  }
+
+  val coreModules = emit(
     "out/src/main/scala",
     transform(parseRootDirectory(Seq(), new File("data/src")))
   )
+
+  def emitExample(path: String) = {
+    val pathList = Seq("examples") ++ path.split("/").dropRight(1)
+    emit(
+      "out/src/main/scala",
+      transform(parseDirectory(pathList, new File(s"data/examples/jsm/$path"))),
+      coreModules
+    )
+  }
+
+  emitExample("controls/OrbitControls.d.ts")
 
 }
