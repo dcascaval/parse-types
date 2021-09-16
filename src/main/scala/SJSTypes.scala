@@ -106,13 +106,20 @@ object Emitter {
       case StringType(value) => value.replace('\'', '"')
       case ArrayType(member) => s"js.Array[${emitType(member)}]"
       case UnionType(members) => {
-        reifyOptional(t, false) match {
+        reifyOptional(elideNull(t), false) match {
           case UnionType(members) => members.map(emitType).mkString(" | ")
           case other              => emitType(other)
         }
       }
-      case Parameterized(name, parameters) =>
-        s"${matchBaseName(name)}[${parameters.map(emitType).mkString(",")}]"
+      case Parameterized(name, parameters) => {
+        val t = parameters.map(emitType).mkString(",")
+        name match {
+          // Special-case inlining because seemingly doesn't otherwise work.
+          case "ArrayLike" =>
+            s"(Uint8Array | Uint16Array | Uint32Array | Int8Array | Int16Array | Int32Array | Float32Array | Float64Array | js.Array[$t])"
+          case _ => s"${matchBaseName(name)}[$t]"
+        }
+      }
       case ObjectType(members, keys) => context.typeName(members, keys)
       case ArrowType(typeParameters, parameters, ret) => {
         val lng = parameters.args.length
@@ -155,7 +162,26 @@ object Helpers {
         val subType = if (filtered.length > 1) UnionType(filtered) else filtered(0)
         Parameterized("js.UndefOr", Seq(subType))
       }
+      // Dirty hack
+      case Base(name) if name.endsWith("Parameters") => Base(name)
       case _ => if (optional) Parameterized("js.UndefOr", Seq(typ)) else typ
+    }
+  }
+
+  def elideNull(typ: DataType): DataType = {
+    typ match {
+      case UnionType(members) if members contains Base("null") => {
+        val filtered = members.filter(_ != Base("null"))
+        if (filtered.length > 1) UnionType(filtered) else filtered(0)
+      }
+      case _ => typ
+    }
+  }
+
+  def lowerArray(typ: DataType): DataType = {
+    typ match {
+      case ArrayType(member) => member
+      case _                 => typ
     }
   }
 
@@ -194,11 +220,12 @@ object Helpers {
   def formatArgList(originalArgs: ArgList)(implicit ctx: TypeContext): String = {
     def formatArgument(a: Argument): String = {
       val typ = emitType(reifyOptional(a.dataType, a.optional))
-      val opt = if (a.optional) " = js.undefined" else ""
+      val opt = if (a.optional && typ.startsWith("js.UndefOr")) " = js.undefined" else ""
       s"${sanitize(a.name)}: $typ$opt"
     }
 
-    def formatVarArg(a: Argument): String = s"${sanitize(a.name)} : (${emitType(a.dataType)})*"
+    def formatVarArg(a: Argument): String =
+      s"${sanitize(a.name)} : (${emitType(lowerArray(a.dataType))})*"
 
     val args = originalArgs.args.map(formatArgument)
     val argsAndVar = originalArgs.varArg match {
@@ -235,12 +262,13 @@ class NativeTrait(
     if (parameterTrait) {
       valueMembers.map(v => v.defaultUndefined = true)
     }
+    // val seal = if (parameterTrait) "" else "sealed "
 
     new Lines(
       Seq(
         "",
         if (parameterTrait) "" else "@js.native",
-        s"sealed trait $name$typeParameters $extendsClause$colon"
+        s"trait $name$typeParameters $extendsClause$colon"
       ),
       members.map(_.emit).toBuffer
     )

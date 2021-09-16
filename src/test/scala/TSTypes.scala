@@ -46,11 +46,8 @@ class SingleTest extends AnyFunSuite {
   test("single") {
     withPrint {
       parseWhole(
-        """vertices: {
-          near: any[];
-          far: any[];
-      };""",
-        valueMember(_)
+        "setCount(count: number): this;",
+        functionMember(_)
       )
     }
   }

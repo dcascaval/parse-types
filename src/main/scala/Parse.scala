@@ -152,7 +152,7 @@ object Parser {
   //
   // CLASS/OBJECT MEMBERS
   //
-  def getSet[_: P] = P(("get " | "set ").!).map(str => if (str == "get") Getter else Setter)
+  def getSet[_: P] = P(("get " | "set ").!).map(str => if (str == "get ") Getter else Setter)
 
   def privateMember[_: P] = P("private" ~/ CharsWhile(_ != ';') ~ ";")
 

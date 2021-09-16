@@ -116,7 +116,13 @@ object Preprocessors extends TextProcessor {
     toArrayOverloads("Vector3"),
     toArrayOverloads("Vector4"),
     toArrayOverloads("Matrix3"),
-    toArrayOverloads("Matrix4")
+    toArrayOverloads("Matrix4"),
+    // This interface allows type-unsafe access, and prevents type-safe overloads that each subtype has anyway.
+    TextReplacement(
+      file = "src/math/Vector2.d.ts",
+      oldText = "set(...args: number[]): this;",
+      newText = ""
+    )
   )
 
   def toArrayOverloads(typeName: String) =
@@ -135,8 +141,8 @@ object Postprocessors extends TextProcessor {
     // Correct solution: Parse imports and exports to exactly import JS modules.
     TextReplacement(
       file = "renderers/webxr.scala",
-      oldText = "sealed trait XRInputSourceEvent extends Event:",
-      newText = "sealed trait XRInputSourceEvent extends org.scalajs.dom.Event:"
+      oldText = "trait XRInputSourceEvent extends Event:",
+      newText = "trait XRInputSourceEvent extends org.scalajs.dom.Event:"
     ),
     // The type parameter `ObjectType` is present on the arrow type, but we don't want to make
     // a polymorphic scala value, so instead we shift it to a type variable on load.

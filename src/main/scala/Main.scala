@@ -170,7 +170,6 @@ object Main extends App {
 
   // Usually imports from TS Stdlib
   val globalDefintions = Lines(
-    "type ArrayLike[T] = js.native",
     "type Record[K,V] = js.native",
     "type WebGLBuffer = js.native",
     "type MediaStream = js.native",

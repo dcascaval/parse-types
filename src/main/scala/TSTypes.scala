@@ -2,8 +2,6 @@ package tsparse
 
 import scala.collection.mutable.Buffer
 import scala.collection.mutable.Map
-import scala.annotation.meta.companionObject
-import javax.xml.crypto.Data
 
 // all of the different possible types
 sealed trait DataType
@@ -205,10 +203,26 @@ class Class(
     extensions: Option[Seq[DataType]],
     implements: Option[DataType] // class Foo implements IFoo {}
 ) extends TopLevelStatement {
+
+  def dedupValues(values: Seq[SJSTopLevel]): Seq[SJSTopLevel] = {
+    val empty = Seq[SJSTopLevel]()
+    val seen = Set[String]()
+    val (_, result) = values.foldLeft((seen, empty)) { case ((seen, result), nextValue) =>
+      nextValue match {
+        case v: NativeValue => {
+          if (seen contains v.name) (seen, result)
+          else (seen + v.name, result :+ nextValue)
+        }
+        case _ => (seen, result :+ nextValue)
+      }
+    }
+    result
+  }
+
   def transform(implicit ctx: TransformContext) = {
     ctx.withCurrentModule(name) {
       // - Statics are filtered into companion object
-      val fnMems = functions.map(f => Function(f).transform).toBuffer
+      val fnMems = dedupValues(functions.map(f => Function(f).transform)).toBuffer
       val vals = values.map(_.transform).toBuffer
 
       // - merge implements and extends clauses
@@ -276,7 +290,9 @@ case class Function(
 
     val fn = getSet match {
       case Some(Getter) => // def $name: ret
-        new NativeFunction(name, typeArgs, None, returnType)
+        new NativeValue(name, returnType, mutable = false)
+      case Some(Setter) =>
+        new NativeValue(name, args.args(0).dataType, mutable = true)
       case _ => // def $name<$T>($args) : ret
         new NativeFunction(name, typeArgs, Some(args), returnType, native = native)
     }
