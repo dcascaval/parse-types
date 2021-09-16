@@ -68,14 +68,6 @@ object Preprocessors extends TextProcessor {
       newText = "export class"
     ),
 
-    // This is an overload that fails due to type erasure, and isn't even useful
-    // since we have no real representation of js tuple types, since JS tuples are arrays.
-    matrixToArray("Vector2"),
-    matrixToArray("Vector3"),
-    matrixToArray("Vector4"),
-    matrixToArray("Matrix3"),
-    matrixToArray("Matrix4"),
-
     // These are duplicate definitions that are strictly less expressive than the definitons
     // that come later.
     TextReplacement(
@@ -102,28 +94,56 @@ object Preprocessors extends TextProcessor {
       |    readonly size: number;
       |}""".stripMargin,
       newText = "export interface XRHand extends Map<XRHandJoint, XRJointSpace> {}"
-    )
+    ),
+    // These are overloads that fail due to type erasure, and aren't even useful
+    // since we have no real representation of js tuple types, since JS tuples are arrays.
+    TextReplacement(
+      file = s"src/math/",
+      oldText = "toArray(array: ArrayLike<number>, offset?: number): ArrayLike<number>;",
+      newText = ""
+    ),
+    TextReplacement(
+      file = s"src/math/",
+      oldText = "toArray(array?: ArrayLike<number>, offset?: number): ArrayLike<number>;",
+      newText = ""
+    ),
+    TextReplacement(
+      file = "src/math/Color.d.ts",
+      oldText = "toArray(xyz: ArrayLike<number>, offset?: number): ArrayLike<number>;",
+      newText = ""
+    ),
+    toArrayOverloads("Vector2"),
+    toArrayOverloads("Vector3"),
+    toArrayOverloads("Vector4"),
+    toArrayOverloads("Matrix3"),
+    toArrayOverloads("Matrix4")
   )
 
-  def matrixToArray(typeName: String) =
+  def toArrayOverloads(typeName: String) =
     TextReplacement(
       file = s"src/math/$typeName.d.ts",
       oldText = s"toArray(array?: ${typeName}Tuple, offset?: 0): ${typeName}Tuple;",
       newText = ""
     )
+
 }
 
 object Postprocessors extends TextProcessor {
+
   val processors = Seq(
+    // Importing all of the other modules indiscriminately causes a name conflict.
+    // Correct solution: Parse imports and exports to exactly import JS modules.
     TextReplacement(
       file = "renderers/webxr.scala",
       oldText = "sealed trait XRInputSourceEvent extends Event:",
       newText = "sealed trait XRInputSourceEvent extends org.scalajs.dom.Event:"
     ),
+    // The type parameter `ObjectType` is present on the arrow type, but we don't want to make
+    // a polymorphic scala value, so instead we shift it to a type variable on load.
     TextReplacement(
       file = "loaders.scala",
-      oldText = "def load(url: String, onLoad: js.UndefOr[js.Function1[ObjectType,Unit]],",
-      newText = "def load[ObjectType](url: String, onLoad: js.UndefOr[js.Function1[ObjectType,Unit]],"
+      oldText = "def load(url: String, onLoad: js.UndefOr[js.Function1[ObjectType,Unit]]",
+      newText = "def load[ObjectType](url: String, onLoad: js.UndefOr[js.Function1[ObjectType,Unit]]"
     )
   )
 }

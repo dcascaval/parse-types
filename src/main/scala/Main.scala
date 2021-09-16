@@ -22,8 +22,6 @@ object Main extends App {
   }
 
   def writeFileText(name: String, text: String): Unit = {
-    // println(s"Writing ${name}")
-
     val processedText = Postprocessors(name, text)
     val f = new File(name)
     f.getParentFile().mkdirs()
@@ -38,7 +36,6 @@ object Main extends App {
 
   // Not strictly optimized per se; but then we're not running this a lot.
   def parseFile(path: Seq[String], file: File): FileResult = {
-    // println(s"Parsing ${file.getPath()}")
     val string = getFileText(file)
     val parseResult = Parser.run(string)
     parseResult match {
@@ -68,9 +65,6 @@ object Main extends App {
     // Assuming this is, in fact, a directory.
     file.listFiles().toSeq.flatMap(f => parseDirectory(path, f))
   }
-
-  // parseDirectory(Seq("examples"), new File("data/examples"))
-  // parseDirectory(Seq(), new File("data/src"))
 
   def assignOverrides(
       member: SJSTopLevel,
@@ -189,10 +183,6 @@ object Main extends App {
     "\n"
   ).emit()
 
-  // What's the right architecture for this?
-  // Every module file should have:
-  // - its own sub-package
-  // - all of its definitions prefixed with @JS.Global("THREE.$name")
   def emit(outDir: String, inputs: (Module, TransformContext)) = {
     val (root, transformContext) = inputs
     val allModules = root.flattenModules()
@@ -237,8 +227,3 @@ object Main extends App {
   )
 
 }
-
-//  EXPORTING TODOs:
-//  - Apply override modifier
-//  - Lift function values to defs so that they have the argument list included
-//  -

@@ -45,7 +45,7 @@ object Emitter {
     // TODO: better naming from method context, etc.
     def newName() = {
       genIndex += 1
-      s"objectType$genIndex"
+      s"AnonObject$genIndex"
     }
 
     def typeName(members: Seq[Argument], keys: Seq[Key]) = {
@@ -62,7 +62,7 @@ object Emitter {
         val mems: Seq[InterfaceMember] =
           members.map(arg => ValueMember(arg.name, arg.dataType, arg.optional, false, false)) ++
             keys.map(key => KeyMember(key))
-        new NativeTrait(name, None, None, mems.map(_.transform(withImpl = true)).toBuffer)
+        new NativeTrait(name, None, None, mems.map(_.transform).toBuffer)
       }
       types.clear()
       result
@@ -194,7 +194,8 @@ object Helpers {
   def formatArgList(originalArgs: ArgList)(implicit ctx: TypeContext): String = {
     def formatArgument(a: Argument): String = {
       val typ = emitType(reifyOptional(a.dataType, a.optional))
-      s"${sanitize(a.name)}: $typ"
+      val opt = if (a.optional) " = js.undefined" else ""
+      s"${sanitize(a.name)}: $typ$opt"
     }
 
     def formatVarArg(a: Argument): String = s"${sanitize(a.name)} : (${emitType(a.dataType)})*"
@@ -224,10 +225,21 @@ class NativeTrait(
     val typeParameters = formatTypeArgs(typeArgs)
     val extendsClause = formatExtensions(extensions)
     val colon = if (members.size > 0) ":" else ""
+
+    val valueMembers = members.flatMap {
+      case v: NativeValue => Some(v)
+      case _              => None
+    }
+
+    val parameterTrait = name.endsWith("Parameters") && valueMembers.length == members.length
+    if (parameterTrait) {
+      valueMembers.map(v => v.defaultUndefined = true)
+    }
+
     new Lines(
       Seq(
         "",
-        "@js.native",
+        if (parameterTrait) "" else "@js.native",
         s"sealed trait $name$typeParameters $extendsClause$colon"
       ),
       members.map(_.emit).toBuffer
@@ -300,19 +312,22 @@ class NativeValue(
     dataType: DataType,
     mutable: Boolean,
     native: Boolean = false,
-    var overrides: Boolean = false,
-    withImpl: Boolean = true
+    var overrides: Boolean = false
 ) extends Overridable {
   var jsName: String = if (native) name else ""
-
+  var defaultUndefined = false
   def types = Seq(dataType)
 
   def emit(implicit ctx: TypeContext): Lines = {
     if (overrides) return Lines()
     val prefix = if (mutable) "var" else "val"
-    val impl = if (withImpl) " = js.native;" else ""
-    var defn = s"$prefix ${sanitize(name)}: ${emitType(sanitizeType(dataType))}$impl"
-
+    val typeString = emitType(sanitizeType(dataType))
+    val impl =
+      if (defaultUndefined) {
+        if (typeString.startsWith("js.UndefOr")) "= js.undefined"
+        else ""
+      } else "= js.native"
+    var defn = s"$prefix ${sanitize(name)}: $typeString $impl"
     val annot = if (native) Seq("@js.native", s"@JSGlobal(\"$jsName\")") else Seq()
 
     new Lines(annot :+ defn)

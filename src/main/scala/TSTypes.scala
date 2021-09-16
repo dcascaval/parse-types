@@ -32,7 +32,7 @@ case object Setter extends GetSetState
 sealed trait Member
 
 sealed trait InterfaceMember extends Member {
-  def transform(withImpl: Boolean = true)(implicit ctx: TransformContext): SJSTopLevel
+  def transform(implicit ctx: TransformContext): SJSTopLevel
 }
 
 import Helpers._
@@ -45,10 +45,10 @@ case class ValueMember(
     readOnly: Boolean,
     static: Boolean
 ) extends InterfaceMember {
-  def transform(withImpl: Boolean = true)(implicit ctx: TransformContext) = {
+  def transform(implicit ctx: TransformContext) = {
     val t = reifyOptional(dataType, optional)
 
-    val result = new NativeValue(name, t, mutable = !readOnly, withImpl = withImpl)
+    val result = new NativeValue(name, t, mutable = !readOnly)
 
     if (static) {
       ctx.mergeToCompanion(ctx.currentModule, result)
@@ -58,7 +58,7 @@ case class ValueMember(
 }
 
 case class KeyMember(key: Key) extends InterfaceMember {
-  def transform(withImpl: Boolean = true)(implicit ctx: TransformContext): SJSTopLevel = {
+  def transform(implicit ctx: TransformContext): SJSTopLevel = {
     val Key(name, t, ret) = key
     new NativeFunction(
       "apply",
@@ -79,7 +79,7 @@ case class FnMember(
     getSet: Option[GetSetState],
     static: Boolean // Mutually exclusive with get/set
 ) extends InterfaceMember {
-  def transform(withImpl: Boolean = true)(implicit ctx: TransformContext): SJSTopLevel = Function(
+  def transform(implicit ctx: TransformContext): SJSTopLevel = Function(
     this
   ).transform
 }
@@ -209,7 +209,7 @@ class Class(
     ctx.withCurrentModule(name) {
       // - Statics are filtered into companion object
       val fnMems = functions.map(f => Function(f).transform).toBuffer
-      val vals = values.map(_.transform()).toBuffer
+      val vals = values.map(_.transform).toBuffer
 
       // - merge implements and extends clauses
       val exts = {
@@ -247,7 +247,7 @@ case class Interface(
   def transform(implicit ctx: TransformContext) = {
     ctx.withCurrentModule(name) {
       val typeArgs = makeGenerics(Some(name), parameters)
-      val transformMems = members.map(_.transform(withImpl = true)).toBuffer
+      val transformMems = members.map(_.transform).toBuffer
       new NativeTrait(name, typeArgs, extensions, transformMems)
     }
   }

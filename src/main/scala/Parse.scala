@@ -7,8 +7,6 @@ import JavaWhitespace._ // Ignore whitespace and //, /* */ comment blocks
 import fastparse.Parsed.Success
 import fastparse.Parsed.Failure
 
-// MISSING LANGUAGE FEATURES:
-// - ?
 object Parser {
 
   // SYNTAX
@@ -107,6 +105,7 @@ object Parser {
     Argument(name, ArrowType(None, args, returnType), false)
   }
 
+  // { a: Foo, b: number[] }
   def objectType[_: P]: P[DataType] = P(
     "{" ~/ (interfaceParameter | interfaceKey | interfaceFunction).rep(0, sep = ";") ~ ";".? ~ "}"
   ).map(mems => {
@@ -240,7 +239,6 @@ object Parser {
     TopLevelEnum(name, mems)
   }
 
-  // TODO: parse this export to correctly expose contextual exported types
   def namespaceMember[_: P]: P[Option[TopLevelStatement]] = P(
     nestedFunction | nestedClass | nestedInterface | nestedConstant | exportStmt
   ).map(mem =>
@@ -285,8 +283,3 @@ object Parser {
   def run(fileText: String) =
     fastparse.parse(fileText, fullFile(_))
 }
-
-// Preprocess:
-// data/src/renderers/webgl/WebGLCubeUVMaps.d.ts
-//  from >    get<T>(texture: T): T extends Texture ? Texture : T;
-//    to >    get<T extends Texture>(texture: T): T;
