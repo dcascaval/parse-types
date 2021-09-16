@@ -192,7 +192,7 @@ object Main extends App {
       new Lines(
         moduleNames
           .filter(_ != currentModule)
-          .map(mod => s"import typings.three.$mod.*")
+          .map(mod => s"import typings.$mod.*")
       ).pad()
 
     def globals(currentModule: String) =
@@ -202,7 +202,7 @@ object Main extends App {
     ctx.defaultTypeArgs = transformContext.typeMapping
 
     for (module <- allModules) {
-      val packageName = s"package typings.three.${module.name}"
+      val packageName = s"package typings.${module.name}"
       val fileName = module.name.replace('.', '/')
 
       val currentImports = imports(module.name).emit()
