@@ -182,7 +182,14 @@ object Main extends App {
     "\n"
   ).emit()
 
-  def emit(outDir: String, inputs: (Module, TransformContext), existingModules: Seq[String] = Seq()) = {
+  def emit(
+      outDir: String,
+      currentImport: String,
+      inputs: (Module, TransformContext),
+      existingModules: Seq[String] = Seq()
+  ) = {
+    implicit val currentPath = currentImport
+
     val (root, transformContext) = inputs
     val allModules = root.flattenModules()
     val moduleNames = existingModules ++ allModules.map(_.name)
@@ -209,7 +216,7 @@ object Main extends App {
       val currentGlobals = globals(module.name)
 
       val firstMembers = module.members
-        .map(member => { member.jsName = s"THREE.${member.name}"; member })
+        .map(member => { member.jsName = s"${member.name}"; member })
         .map(_.emit.emit())
       val interfaceTypes = ctx.resetTypes().map(_.emit.emit())
       val members = firstMembers ++ interfaceTypes
@@ -233,14 +240,17 @@ object Main extends App {
   }
 
   val coreModules = emit(
-    "out/src/main/scala",
-    transform(parseRootDirectory(Seq(), new File("data/src")))
+    outDir = "/Users/dan/repos/scala-threejs-facades/src/main/scala",
+    currentImport = "three",
+    inputs = transform(parseRootDirectory(Seq(), new File("data/src")))
   )
 
   def emitExample(path: String) = {
     val pathList = Seq("examples") ++ path.split("/").dropRight(1)
+    val importPath = s"three/examples/jsm/${path.split('.')(0)}"
     emit(
-      "out/src/main/scala",
+      outDir = "/Users/dan/repos/scala-threejs-facades/src/main/scala",
+      currentImport = importPath,
       transform(parseDirectory(pathList, new File(s"data/examples/jsm/$path"))),
       coreModules
     )

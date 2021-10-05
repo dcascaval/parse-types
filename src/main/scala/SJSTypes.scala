@@ -141,7 +141,7 @@ object Emitter {
 import Emitter._
 
 sealed trait SJSTopLevel {
-  def emit(implicit ctx: TypeContext): Lines
+  def emit(implicit ctx: TypeContext, currentPath: String): Lines
   var name: String
   var jsName: String
 }
@@ -150,11 +150,14 @@ object SJSTopLevel {
   def empty: SJSTopLevel = new SJSTopLevel {
     var name = ""
     var jsName = ""
-    def emit(implicit ctx: TypeContext): Lines = new Lines(Seq(), Buffer())
+    def emit(implicit ctx: TypeContext, currentPath: String): Lines = new Lines(Seq(), Buffer())
   }
 }
 
 object Helpers {
+  def importItem(jsName: String)(implicit currentPath: String): String =
+    s"@JSImport(\"$currentPath\",\"$jsName\")"
+
   def reifyOptional(typ: DataType, optional: Boolean): DataType = {
     typ match {
       case UnionType(members) if members contains Base("undefined") => {
@@ -214,7 +217,9 @@ object Helpers {
       .map(exts => s"extends ${exts.map(emitType).mkString(" with ")}")
       .getOrElse("extends js.Object")
 
-  def formatTypeArgs(args: Option[Seq[Generic]])(implicit ctx: TypeContext): String =
+  def formatTypeArgs(
+      args: Option[Seq[Generic]]
+  )(implicit ctx: TypeContext, currentPath: String): String =
     args.map(a => s"[${a.map(_.emit).mkString(",")}]").getOrElse("")
 
   def formatArgList(originalArgs: ArgList)(implicit ctx: TypeContext): String = {
@@ -248,7 +253,7 @@ class NativeTrait(
 ) extends TraitDeclaration
     with Composite {
   var jsName: String = ""
-  def emit(implicit ctx: TypeContext): Lines = {
+  def emit(implicit ctx: TypeContext, currentPath: String): Lines = {
     val typeParameters = formatTypeArgs(typeArgs)
     val extendsClause = formatExtensions(extensions)
     val colon = if (members.size > 0) ":" else ""
@@ -278,7 +283,7 @@ class NativeTrait(
 class ScalaTrait(var name: String, extensions: Option[Seq[DataType]], members: Seq[SJSTopLevel])
     extends TraitDeclaration {
   var jsName: String = ""
-  def emit(implicit ctx: TypeContext): Lines = {
+  def emit(implicit ctx: TypeContext, currentPath: String): Lines = {
     val extendsClause = formatExtensions(extensions)
     new Lines(Seq(s"trait $name $extendsClause:"), members.map(_.emit).toBuffer)
   }
@@ -304,7 +309,7 @@ class NativeClass(
     case _              => true
   }
 
-  def emit(implicit ctx: TypeContext): Lines = {
+  def emit(implicit ctx: TypeContext, currentPath: String): Lines = {
     val typPars = formatTypeArgs(typeArgs)
 
     val ctors = constructors
@@ -313,7 +318,7 @@ class NativeClass(
       .toBuffer
 
     val colon = if (membersSansOverrides + ctors.size > 0) ":" else ""
-    val jsGlobal = if (jsName.length() > 0) Seq(s"@JSGlobal(\"$jsName\")") else Seq()
+    val jsGlobal = if (jsName.length() > 0) Seq(importItem(jsName)) else Seq()
 
     new Lines(
       Seq("", "@js.native") ++ jsGlobal ++ Seq(
@@ -325,7 +330,7 @@ class NativeClass(
 }
 class TypeAlias(var name: String, dataType: DataType) extends SJSTopLevel {
   var jsName: String = ""
-  def emit(implicit ctx: TypeContext): Lines = {
+  def emit(implicit ctx: TypeContext, currentPath: String): Lines = {
     Lines("", s"type $name = ${emitType(dataType)}")
   }
 }
@@ -346,7 +351,7 @@ class NativeValue(
   var defaultUndefined = false
   def types = Seq(dataType)
 
-  def emit(implicit ctx: TypeContext): Lines = {
+  def emit(implicit ctx: TypeContext, currentPath: String): Lines = {
     if (overrides) return Lines()
     val prefix = if (mutable) "var" else "val"
     val typeString = emitType(sanitizeType(dataType))
@@ -356,14 +361,14 @@ class NativeValue(
         else ""
       } else "= js.native"
     var defn = s"$prefix ${sanitize(name)}: $typeString $impl"
-    val annot = if (native) Seq("@js.native", s"@JSGlobal(\"$jsName\")") else Seq()
+    val annot = if (native) Seq("@js.native", importItem(jsName)) else Seq()
 
     new Lines(annot :+ defn)
   }
 }
 
 case class Generic(typ: String, superType: Option[DataType]) {
-  def emit(implicit ctx: TypeContext): String = {
+  def emit(implicit ctx: TypeContext, currentPath: String): String = {
     superType.map(default => s"$typ <: ${emitType(default)}").getOrElse(typ)
   }
 }
@@ -381,7 +386,7 @@ class NativeFunction(
   def types: Seq[DataType] =
     args.map(_.args.map(_.dataType)).getOrElse(Seq())
 
-  var jsName: String = if (native) s"THREE.$name" else ""
+  var jsName: String = if (native) s"$name" else ""
 
   def sanitize_method(identifier: String) = {
     val san = sanitize(identifier)
@@ -393,14 +398,14 @@ class NativeFunction(
     newName
   }
 
-  def emit(implicit ctx: TypeContext): Lines = {
+  def emit(implicit ctx: TypeContext, currentPath: String): Lines = {
     if (overrides) return Lines()
 
     val cleanName = sanitize_method(name)
     val typPars = formatTypeArgs(typeArgs)
     val apars = args.map(formatArgList).getOrElse("")
     val annots = if (native) {
-      Seq("@js.native", s"@JSGlobal(\"$jsName\")")
+      Seq("@js.native", importItem(jsName))
     } else {
       (if (bracket) Seq("@JSBracketAccess") else Seq()) ++
         (if (jsName.length() > 0) Seq(s"@JSName(\"$jsName\")") else Seq())
@@ -415,10 +420,10 @@ class NativeObject(
     var jsName: String,
     val members: Buffer[SJSTopLevel] = Buffer()
 ) extends SJSTopLevel {
-  def emit(implicit ctx: TypeContext): Lines = {
+  def emit(implicit ctx: TypeContext, currentPath: String): Lines = {
     val colon = if (members.size > 0) ":" else ""
     new Lines(
-      Seq("", "@js.native", s"@JSGlobal(\"$jsName\")", s"object $name extends js.Object$colon"),
+      Seq("", "@js.native", importItem(jsName), s"object $name extends js.Object$colon"),
       members.map(_.emit)
     )
   }
@@ -427,7 +432,7 @@ class NativeObject(
 class CompanionObject(var name: String, val members: Buffer[SJSTopLevel] = Buffer())
     extends SJSTopLevel {
   var jsName: String = ""
-  def emit(implicit ctx: TypeContext): Lines =
+  def emit(implicit ctx: TypeContext, currentPath: String): Lines =
     new NativeObject(name, jsName, members).emit
   // new Lines(Seq("", s"object $name:"), members.map(_.emit))
 }
@@ -490,14 +495,10 @@ class Module(val name: String, val members: Buffer[SJSTopLevel] = Buffer()) {
 // - each folder will become a module, which is an object that looks like:
 //
 //  @js.native
-//  @JSGlobal("THREE")
+//  @JSImport("three","$name")
 //  object $name extends js.Object {
 //    import $dependency.*
 //  }
 //
-// It will import dependencies from all the modules it needs to.
-// Note that all of the JSGlobal("THREE") annotations will make it so that
-// these access the same JS object at runtime. By default we will have
-// everything import everything else.
 
 // class FacadeModule(name: String, members: Buffer[SJSTopLevel])
